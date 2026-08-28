@@ -3,6 +3,7 @@ import {
   buildMonthDays,
   minutesOfEligibleAvailability,
   startOfWarsawWeek,
+  warsawWallTimeToIso,
   validateAvailabilityException,
   validateWeeklyAvailability,
   type AvailabilityExceptionInput,
@@ -53,6 +54,8 @@ assert.deepEqual(
 
 assert.equal(startOfWarsawWeek(new Date("2026-08-28T18:00:00Z")), "2026-08-24");
 assert.equal(startOfWarsawWeek(new Date("2026-03-29T01:30:00Z")), "2026-03-23");
+assert.equal(warsawWallTimeToIso("2026-09-14", "10:00"), "2026-09-14T08:00:00.000Z");
+assert.equal(warsawWallTimeToIso("2026-11-14", "10:00"), "2026-11-14T09:00:00.000Z");
 
 const august = buildMonthDays("2026-08-15");
 assert.equal(august.length, 42);

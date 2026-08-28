@@ -150,6 +150,31 @@ export function startOfWarsawWeek(date: Date): string {
   return addUtcDays(warsaw.date, -(weekdayIndex[warsaw.weekday] ?? 0));
 }
 
+export function warsawWallTimeToIso(date: string, time: string): string {
+  if (!DATE_RE.test(date) || !TIME_RE.test(time)) throw new Error("Invalid Warsaw wall time");
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const desiredWallClock = Date.UTC(year, month - 1, day, hour, minute);
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: WARSAW_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  let instant = desiredWallClock;
+  for (let iteration = 0; iteration < 2; iteration += 1) {
+    const parts = formatter.formatToParts(new Date(instant));
+    const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value);
+    const renderedAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+    instant = desiredWallClock - (renderedAsUtc - instant);
+  }
+  return new Date(instant).toISOString();
+}
+
 export function buildMonthDays(anchor: string): MonthDay[] {
   if (!DATE_RE.test(anchor)) throw new Error("Invalid calendar anchor date");
   const [year, month] = anchor.split("-").map(Number);
