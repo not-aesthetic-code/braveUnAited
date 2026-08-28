@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { RescheduleCalendar } from "@/components/reschedule-calendar";
+import { StatusBadge } from "@/components/status-badge";
 import {
   type Appointment,
   getAppointmentsForPractitioner,
@@ -18,14 +19,6 @@ import {
   reschedulePractitionerBookingAction,
   sendReminderEmailAction,
 } from "../actions";
-
-const STATUS_LABEL: Record<string, string> = {
-  held: "Oczekuje na płatność",
-  confirmed: "Potwierdzona",
-  cancelled: "Odwołana",
-  completed: "Odbyta",
-  no_show: "Nieobecność",
-};
 
 const DAY_MS = 86_400_000;
 
@@ -63,7 +56,7 @@ function AppointmentRow({
             })}
           </p>
         </div>
-        <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium">{STATUS_LABEL[appt.status]}</span>
+        <StatusBadge status={appt.status} />
       </div>
       <div className="mt-3 flex flex-wrap gap-4 text-sm">
         <span>Pacjent: <span className="font-medium">{appt.patient.name}</span></span>
