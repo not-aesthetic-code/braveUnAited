@@ -1,8 +1,19 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { canManage, confirmPayment, getAppointment, listAvailableSlots } from "@/lib/appointments";
+import { canManage, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
+
+// A meeting_info value that looks like a URL renders as a link (video call);
+// anything else — a street address — renders as plain text.
+function isUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -54,6 +65,7 @@ export default async function ManageBookingPage({
   const rescheduleOptions = canReschedule
     ? (await listAvailableSlots(appt.serviceId)).filter((s) => s.practitionerId === appt.practitionerId)
     : [];
+  const practitioner = appt.status === "confirmed" ? await getPractitioner(appt.practitionerId) : undefined;
 
   return (
     <div className="mx-auto flex max-w-lg flex-col gap-6 px-6 py-16">
@@ -81,6 +93,26 @@ export default async function ManageBookingPage({
           {appt.price > 0 ? `${appt.price} zł` : "Bezpłatnie"}
         </p>
       </div>
+
+      {practitioner?.meetingInfo && (
+        <div className="rounded-xl border bg-card p-5">
+          <p className="font-medium">
+            {isUrl(practitioner.meetingInfo) ? "Link do spotkania" : "Adres"}
+          </p>
+          {isUrl(practitioner.meetingInfo) ? (
+            <a
+              href={practitioner.meetingInfo}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm underline underline-offset-4"
+            >
+              {practitioner.meetingInfo}
+            </a>
+          ) : (
+            <p className="text-sm text-muted-foreground">{practitioner.meetingInfo}</p>
+          )}
+        </div>
+      )}
 
       {appt.status === "held" && (
         <form action={payBookingAction.bind(null, appt.id)}>
