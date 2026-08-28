@@ -14,11 +14,26 @@ import {
   rescheduleAppointment,
   canManage,
   listAvailableSlots,
+  getAppointment,
+  markAttendance,
+  getPatientsToRemind,
+  sendVisitReminderEmail,
   HOLD_MINUTES,
   MAX_RESCHEDULES,
+  ATTENDANCE_GRACE_HOURS,
 } from "./appointments";
 
-const contact = { name: "Test", email: "selfcheck@example.com", phone: "123" };
+// A bare national number — the +48 country code is hardcoded (see phone.ts),
+// so upsertPatientByPhone stores this as "+48690000001". The finally block
+// below has to look appointments up by that stored form, not this raw input.
+// A placeholder like the old "123" would now be rejected outright.
+const contact = { name: "Test", email: "selfcheck@example.com", phone: "690000001" };
+const contactPhoneStored = "+48690000001";
+
+// A guest who never gave an email — for the "can't email this patient"
+// branch of sendVisitReminderEmail.
+const noEmailContact = { name: "Test NoEmail", email: "", phone: "690000002" };
+const noEmailPhoneStored = "+48690000002";
 
 async function main() {
   // Hold expires after HOLD_MINUTES.
@@ -82,6 +97,115 @@ async function main() {
     );
   }
 
+  // Attendance: explicit mark only works once the session has started, and
+  // once settled it can't be re-marked.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-14T10:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+
+    await assert.rejects(() => markAttendance(appt.id, "completed", now), "shouldn't be markable before it starts");
+
+    const afterStart = new Date("2026-09-14T10:05:00Z");
+    const noShow = await markAttendance(appt.id, "no_show", afterStart);
+    assert.equal(noShow.status, "no_show");
+    await assert.rejects(() => markAttendance(appt.id, "completed", afterStart), "already settled, shouldn't be re-markable");
+  }
+
+  // Unmarked confirmed visits default to "completed" ATTENDANCE_GRACE_HOURS
+  // after they end, instead of reading "confirmed" forever.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-12T10:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+    const endsAt = new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+
+    const stillInGrace = new Date(endsAt + ATTENDANCE_GRACE_HOURS * 3_600_000 - 1000);
+    assert.equal((await getAppointment(appt.id, stillInGrace))?.status, "confirmed");
+
+    const pastGrace = new Date(endsAt + ATTENDANCE_GRACE_HOURS * 3_600_000 + 1000);
+    assert.equal((await getAppointment(appt.id, pastGrace))?.status, "completed");
+  }
+
+  // getPatientsToRemind must still surface a visit that already auto-completed
+  // — filtering on status "confirmed" alone would silently lose it once
+  // expireIfStale() settles it.
+  {
+    const holdNow = new Date("2025-12-31T00:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2026-01-01T10:00:00Z", patientContact: contact }, holdNow);
+    const appt = await confirmPayment(held.id, holdNow);
+
+    const now = new Date("2026-09-01T10:00:00Z"); // months later — well past the grace window and the 6-week reminder cutoff
+    assert.equal((await getAppointment(appt.id, now))?.status, "completed");
+
+    const reminders = await getPatientsToRemind("spec-3", now);
+    assert.ok(
+      reminders.some((r) => r.patient.id === appt.patientId),
+      "auto-completed visit should still surface for reminder outreach"
+    );
+  }
+
+  // Phone normalization is wired into upsertPatientByPhone: different ways
+  // of typing the same national number (see phone.selfcheck.ts for the
+  // pure-function cases) resolve to the same patient row, and a number that
+  // isn't 9 digits is rejected before it can reach the DB at all.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const a = await holdSlot(
+      { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T10:00:00Z", patientContact: { ...contact, phone: "690 000 001" } },
+      now
+    );
+    const b = await holdSlot(
+      { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T11:30:00Z", patientContact: { ...contact, phone: "690-000-001" } },
+      now
+    );
+    assert.equal(a.patientId, b.patientId, "different formats of the same number should dedupe to one patient");
+
+    await assert.rejects(
+      () =>
+        holdSlot(
+          { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T13:00:00Z", patientContact: { ...contact, phone: "not-a-phone" } },
+          now
+        ),
+      "an invalid phone number should be rejected"
+    );
+  }
+
+  // Reminder email: applies to any service type (not just adhd_diagnoza —
+  // that's a different, immediate booking-confirmation SMS), records when it
+  // went out so getPatientsToRemind can report "already sent", and refuses a
+  // patient with no email on file instead of silently doing nothing.
+  {
+    const holdNow = new Date("2025-06-01T00:00:00Z");
+    const held = await holdSlot(
+      { practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2025-06-02T10:00:00Z", patientContact: contact },
+      holdNow
+    );
+    const appt = await confirmPayment(held.id, holdNow);
+
+    const now = new Date("2026-09-01T10:00:00Z"); // months later — well past the 6-week cutoff
+    const before = await getPatientsToRemind("spec-3", now);
+    const candidateBefore = before.find((c) => c.patient.id === appt.patientId);
+    assert.ok(candidateBefore, "should be a reminder candidate");
+    assert.equal(candidateBefore!.lastReminderSentAt, null);
+
+    await sendVisitReminderEmail(appt.patientId, now);
+    const after = await getPatientsToRemind("spec-3", now);
+    const candidateAfter = after.find((c) => c.patient.id === appt.patientId);
+    assert.ok(candidateAfter?.lastReminderSentAt, "lastReminderSentAt should be set after sending");
+    assert.equal(new Date(candidateAfter!.lastReminderSentAt!).getTime(), now.getTime());
+
+    const noEmailHeld = await holdSlot(
+      { practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2025-06-03T10:00:00Z", patientContact: noEmailContact },
+      holdNow
+    );
+    const noEmailAppt = await confirmPayment(noEmailHeld.id, holdNow);
+    await assert.rejects(
+      () => sendVisitReminderEmail(noEmailAppt.patientId, now),
+      "a patient with no email on file shouldn't be emailable"
+    );
+  }
+
   console.log("appointments.ts self-check passed");
 }
 
@@ -91,6 +215,8 @@ main().finally(async () => {
   });
   // patient contact info now lives in `patients`, keyed by phone — delete
   // this run's appointments via that row instead of a patient_email column.
-  const { data: patient } = await db.from("patients").select("id").eq("phone", contact.phone).maybeSingle();
-  if (patient) await db.from("appointments").delete().eq("patient_id", patient.id);
+  for (const phone of [contactPhoneStored, noEmailPhoneStored]) {
+    const { data: patient } = await db.from("patients").select("id").eq("phone", phone).maybeSingle();
+    if (patient) await db.from("appointments").delete().eq("patient_id", patient.id);
+  }
 });

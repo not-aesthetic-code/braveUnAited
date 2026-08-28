@@ -61,8 +61,14 @@ export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
+// A specialist has this long after a session ends to explicitly mark
+// completed/no_show before the system defaults it to "completed" — see
+// expireIfStale().
+export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { sendEmail } from "./email";
+import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
 
 // Lazy singleton — a top-level createClient() call would throw at build
@@ -131,12 +137,30 @@ function fromRow(r: Row): Appointment {
   };
 }
 
+function appointmentEndsAt(appt: Appointment): number {
+  return new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+}
+
+// Whether a session has started — the earliest point a specialist can
+// meaningfully mark it completed/no_show (they may know at the start that a
+// patient hasn't joined, no need to wait for the full duration to elapse).
+export function isPastAppointment(appt: Appointment, now = new Date()): boolean {
+  return new Date(appt.startsAt).getTime() <= now.getTime();
+}
+
 // A hold blocks the slot only until it expires — treat it as free again
-// afterwards instead of leaving a dead "held" record in the way.
+// afterwards instead of leaving a dead "held" record in the way. Likewise, a
+// confirmed appointment nobody explicitly marked completed/no_show for
+// eventually defaults to "completed" (ATTENDANCE_GRACE_HOURS after it ends)
+// — a specialist who forgets to attend to a past visit shouldn't leave it
+// stuck reading "confirmed" forever.
 async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment> {
   if (appt.status === "held" && appt.heldUntil && new Date(appt.heldUntil) <= now) {
     await db().from("appointments").update({ status: "cancelled" }).eq("id", appt.id).eq("status", "held");
     appt.status = "cancelled";
+  } else if (appt.status === "confirmed" && appointmentEndsAt(appt) + ATTENDANCE_GRACE_HOURS * 3_600_000 <= now.getTime()) {
+    await db().from("appointments").update({ status: "completed" }).eq("id", appt.id).eq("status", "confirmed");
+    appt.status = "completed";
   }
   return appt;
 }
@@ -148,14 +172,22 @@ export async function getAppointment(id: string, now = new Date()): Promise<Appo
 }
 
 // Dedup key is phone — the only identifier guest booking reliably collects.
+// Normalized first (see phone.ts — +48 is hardcoded, every patient is
+// Polish) so "600 100 200" and "600-100-200" from two different bookings
+// resolve to the same patient instead of two rows — the `patients.phone`
+// column is `unique`, so an unnormalized duplicate would otherwise fail the
+// insert instead of merging.
 // Never overwrite an already-set email on conflict: /konto looks bookings up
 // by email, so silently moving a patient's email to whatever they typed on
 // their latest booking would strand their older bookings under the old one.
 async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
+  const phone = normalizePolishPhone(contact.phone);
+  if (!phone) throw new Error("podaj poprawny polski numer telefonu, np. 600 123 456");
+
   const { data: existing, error: lookupError } = await db()
     .from("patients")
     .select("id, email")
-    .eq("phone", contact.phone)
+    .eq("phone", phone)
     .maybeSingle();
   if (lookupError) throw lookupError;
 
@@ -169,7 +201,7 @@ async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: stri
 
   const { data, error } = await db()
     .from("patients")
-    .insert({ name: contact.name, email: contact.email || null, phone: contact.phone })
+    .insert({ name: contact.name, email: contact.email || null, phone })
     .select("id")
     .single();
   if (error) throw error;
@@ -315,6 +347,30 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
   return fromRow(data as Row);
 }
 
+// Explicit outcome for a past session — the counterpart to the automatic
+// completion in expireIfStale(). "no_show" can only be set this way: the
+// system has no signal that a patient didn't attend beyond a specialist
+// saying so.
+export async function markAttendance(
+  id: string,
+  outcome: Extract<AppointmentStatus, "completed" | "no_show">,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.status !== "confirmed") throw new Error("only a confirmed appointment can be marked");
+  if (!isPastAppointment(appt, now)) throw new Error("appointment hasn't started yet");
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: outcome })
+    .eq("id", id)
+    .eq("status", "confirmed")
+    .select(APPOINTMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
+}
+
 // A practitioner's own visit list — same service-role db(), just filtered
 // and ordered instead of open-ended, since a doctor only ever needs their own.
 export async function getAppointmentsForPractitioner(
@@ -336,13 +392,22 @@ export const REMINDER_AFTER_WEEKS = 6;
 export type ReminderCandidate = {
   patient: { id: string; name: string; email: string; phone: string };
   lastVisitAt: string; // ISO — most recent confirmed appointment in the past
+  lastReminderSentAt: string | null; // ISO — see sendVisitReminderEmail()
 };
 
 // Patients a practitioner should reach out to: their most recent confirmed
 // appointment was REMINDER_AFTER_WEEKS+ ago, and they have nothing booked
-// since. Outreach itself is manual (call/SMS) — same "stub the delivery,
-// build the real logic" pattern as confirmPayment() before Stripe landed —
-// this just surfaces who to call.
+// since. Applies across every service type — nothing here is ADHD-specific,
+// unlike the immediate booking-confirmation SMS in confirmPayment(), which
+// is a different feature entirely. Outreach is specialist-triggered (see
+// sendVisitReminderEmail(), wired to a button in /panel) rather than
+// automatic, so a patient isn't re-emailed on every /panel page load.
+//
+// Includes both "confirmed" (future, or past but still inside the
+// ATTENDANCE_GRACE_HOURS window) and "completed" (settled past visits) —
+// past visits don't stay "confirmed" forever once expireIfStale() runs, so
+// this can't filter on "confirmed" alone without silently losing everyone
+// whose last visit already auto-completed.
 export async function getPatientsToRemind(
   practitionerId: string,
   now = new Date()
@@ -351,17 +416,25 @@ export async function getPatientsToRemind(
     .from("appointments")
     .select(APPOINTMENT_SELECT)
     .eq("practitioner_id", practitionerId)
-    .eq("status", "confirmed")
+    .in("status", ["confirmed", "completed"])
     .order("starts_at", { ascending: false });
   if (error) throw error;
 
-  const appts = ((data ?? []) as Row[]).map(fromRow);
+  // patients(*) in APPOINTMENT_SELECT already pulls last_reminder_sent_at —
+  // it's just not part of the narrower Row/Appointment "patient" shape used
+  // elsewhere, so it's read off the raw row instead of threaded through
+  // fromRow().
+  type RowWithReminderState = Row & { patient: Row["patient"] & { last_reminder_sent_at: string | null } };
+  const appts = ((data ?? []) as RowWithReminderState[]).map((r) => ({
+    ...fromRow(r),
+    lastReminderSentAt: r.patient.last_reminder_sent_at,
+  }));
   const nowMs = now.getTime();
   const cutoffMs = nowMs - REMINDER_AFTER_WEEKS * 7 * 86_400_000;
 
   // Rows are ordered newest-first, so the first past appointment seen per
   // patient is their most recent one.
-  const lastPastVisit = new Map<string, Appointment>();
+  const lastPastVisit = new Map<string, (typeof appts)[number]>();
   const hasUpcoming = new Set<string>();
   for (const appt of appts) {
     if (new Date(appt.startsAt).getTime() >= nowMs) {
@@ -375,10 +448,33 @@ export async function getPatientsToRemind(
   for (const [patientId, appt] of lastPastVisit) {
     if (hasUpcoming.has(patientId)) continue;
     if (new Date(appt.startsAt).getTime() <= cutoffMs) {
-      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt });
+      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt, lastReminderSentAt: appt.lastReminderSentAt });
     }
   }
   return candidates.sort((a, b) => a.lastVisitAt.localeCompare(b.lastVisitAt));
+}
+
+// Fires the getPatientsToRemind() outreach as an actual email instead of
+// leaving it as a call-list, and records when it went out so /panel can show
+// "already sent" instead of offering to resend on every reload. A
+// phone-only guest patient has no email to send to — the caller (the
+// specialist, via the panel) still has phone/call as the fallback for them.
+export async function sendVisitReminderEmail(patientId: string, now = new Date()): Promise<void> {
+  const { data: patient, error } = await db().from("patients").select("name, email").eq("id", patientId).single();
+  if (error) throw error;
+  if (!patient.email) throw new Error("patient has no email on file — call instead");
+
+  sendEmail(
+    patient.email,
+    "Zapraszamy na kolejną wizytę",
+    `Cześć ${patient.name}, minęło trochę czasu od Twojej ostatniej wizyty. Jeśli chcesz umówić kolejną, zajrzyj na naszą stronę.`
+  );
+
+  const { error: updateError } = await db()
+    .from("patients")
+    .update({ last_reminder_sent_at: now.toISOString() })
+    .eq("id", patientId);
+  if (updateError) throw updateError;
 }
 
 // Optional patient account (/konto) — matched by email via Supabase Auth

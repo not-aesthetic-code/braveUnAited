@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
-import { getAppointmentsForPractitioner, getPatientsToRemind, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
+import { Button } from "@/components/ui/button";
+import { getAppointmentsForPractitioner, getPatientsToRemind, isPastAppointment, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
+import { markAttendanceAction, sendReminderEmailAction } from "../actions";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -45,6 +47,21 @@ export default async function DoctorPanelPage() {
                   year: "numeric",
                 })}
               </p>
+              <div className="mt-3 flex items-center gap-3">
+                {r.patient.email ? (
+                  <form action={sendReminderEmailAction.bind(null, r.patient.id)}>
+                    <Button type="submit" variant="outline" size="sm">Wyślij przypomnienie e-mailem</Button>
+                  </form>
+                ) : (
+                  <span className="text-sm text-muted-foreground">Brak e-maila — zadzwoń</span>
+                )}
+                {r.lastReminderSentAt && (
+                  <span className="text-xs text-muted-foreground">
+                    Ostatnio wysłano{" "}
+                    {new Date(r.lastReminderSentAt).toLocaleDateString("pl-PL", { day: "numeric", month: "long" })}
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -73,6 +90,16 @@ export default async function DoctorPanelPage() {
               <span>Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span></span>
               <span>Pacjent: <span className="font-medium">{appt.patient.name}</span></span>
             </div>
+            {appt.status === "confirmed" && isPastAppointment(appt) && (
+              <div className="mt-3 flex gap-2">
+                <form action={markAttendanceAction.bind(null, appt.id, "completed")}>
+                  <Button type="submit" variant="outline" size="sm">Wizyta się odbyła</Button>
+                </form>
+                <form action={markAttendanceAction.bind(null, appt.id, "no_show")}>
+                  <Button type="submit" variant="outline" size="sm">Pacjent się nie zjawił</Button>
+                </form>
+              </div>
+            )}
           </div>
         ))}
       </div>
