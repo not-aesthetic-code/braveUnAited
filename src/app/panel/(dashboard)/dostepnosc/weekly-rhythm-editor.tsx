@@ -68,9 +68,13 @@ function totalMinutes(ranges: EditableRange[]): number {
 export function WeeklyRhythmEditor({
   initialAvailability,
   services,
+  lowCostVisitsThisWeek,
+  lowCostVisitsLimit,
 }: {
   initialAvailability: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>;
   services: Record<ManagedAvailabilityService, Service>;
+  lowCostVisitsThisWeek: number;
+  lowCostVisitsLimit: number;
 }) {
   const [activeTab, setActiveTab] = useState<ManagedAvailabilityService>("pelnoplatna");
   const [ranges, setRanges] = useState<Record<ManagedAvailabilityService, EditableRange[]>>({
@@ -134,7 +138,10 @@ export function WeeklyRhythmEditor({
         </TabsList>
 
         {(["pelnoplatna", "niskoplatna"] as const).map((serviceId) => (
-          <TabsContent key={serviceId} value={serviceId} className="mt-4">
+          <TabsContent key={serviceId} value={serviceId} className="mt-4 flex flex-col gap-4">
+            {serviceId === "niskoplatna" && (
+              <LowCostQuotaCard used={lowCostVisitsThisWeek} limit={lowCostVisitsLimit} />
+            )}
             <ServiceScheduleCard
               service={services[serviceId]}
               ranges={ranges[serviceId]}
@@ -144,6 +151,35 @@ export function WeeklyRhythmEditor({
           </TabsContent>
         ))}
       </Tabs>
+    </div>
+  );
+}
+
+function LowCostQuotaCard({ used, limit }: { used: number; limit: number }) {
+  const remaining = Math.max(limit - used, 0);
+  const percent = Math.min((used / limit) * 100, 100);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border bg-card p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-semibold tracking-tight">Twoja pula na ten tydzień</h2>
+          <p className="text-sm text-muted-foreground">
+            Możesz przyjąć maksymalnie {limit} {limit === 1 ? "wizytę" : "wizyt"} niskopłatnych tygodniowo
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full bg-amber-500/15 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+          {used} z {limit}
+        </span>
+      </div>
+
+      <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${percent}%` }} />
+      </div>
+
+      <p className="text-sm text-muted-foreground">
+        Zostały {remaining} {remaining === 1 ? "wizyta" : "wizyt"}. Pula odnawia się w każdy poniedziałek.
+      </p>
     </div>
   );
 }

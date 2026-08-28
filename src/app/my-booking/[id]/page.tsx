@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { RescheduleCalendar } from "@/components/reschedule-calendar";
-import { CANCEL_REASONS, canManage, cancelDeadline, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
+import { CANCEL_REASONS, MAX_RESCHEDULES, canManage, cancelDeadline, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
 
@@ -131,7 +131,7 @@ export default async function ManageBookingPage({
 
       {appt.status === "confirmed" && canCancel && (
         <p className="text-sm text-muted-foreground">
-          Możesz jeszcze bezpłatnie zmienić lub odwołać — masz na to czas do{" "}
+          Możesz jeszcze bezpłatnie {canReschedule ? "zmienić lub odwołać" : "odwołać"} — masz na to czas do{" "}
           <span className="font-medium text-foreground">
             {cancelDeadline(appt).toLocaleString("pl-PL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}
           </span>
@@ -161,9 +161,22 @@ export default async function ManageBookingPage({
         <div className="flex flex-col gap-3 rounded-xl border bg-card p-5">
           <p className="font-medium">Przełóż termin</p>
           <p className="text-xs text-muted-foreground">
-            Zmiana {appt.rescheduleCount} z 2 dozwolonych dla tej rezerwacji.
+            Zmienia się tylko godzina — specjalista, cena i forma wizyty zostają bez zmian.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Zmiana {appt.rescheduleCount + 1} z 2 dozwolonych dla tej rezerwacji.
           </p>
           <RescheduleCalendar slots={rescheduleOptions} action={rescheduleBookingAction.bind(null, appt.id)} />
+        </div>
+      )}
+
+      {appt.status === "confirmed" && canCancel && !canReschedule && (
+        <div className="rounded-xl border bg-card p-5">
+          <p className="font-medium">Przełóż termin</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Tę wizytę przekładano już {appt.rescheduleCount} razy z dozwolonych {MAX_RESCHEDULES}. Kolejna
+            zmiana wymaga kontaktu ze specjalistą. Odwołanie nadal jest możliwe.
+          </p>
         </div>
       )}
 

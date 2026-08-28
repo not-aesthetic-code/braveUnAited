@@ -1,12 +1,22 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Slot } from "@/lib/appointments";
+import type { Service, ServiceType, Slot } from "@/lib/appointments";
 
 const dayKey = (d: Date) => d.toDateString();
 const dateKey = (iso: string) => dayKey(new Date(iso));
 
 const WEEKDAY_LABELS = ["Nd", "Pon", "Wt", "Śr", "Czw", "Pt", "Sob"];
+
+// One color per consultation type so the combined calendar can tell them
+// apart at a glance — same 5 ids as SERVICE_TYPES in lib/appointments.
+const SERVICE_TYPE_STYLES: Record<ServiceType, { dot: string; active: string }> = {
+  niskoplatna: { dot: "bg-sky-500", active: "border-sky-500 text-sky-600" },
+  pelnoplatna: { dot: "bg-violet-500", active: "border-violet-500 text-violet-600" },
+  adhd_diagnoza: { dot: "bg-amber-500", active: "border-amber-500 text-amber-600" },
+  asystent_zdrowienia: { dot: "bg-emerald-500", active: "border-emerald-500 text-emerald-600" },
+  bezplatna: { dot: "bg-rose-500", active: "border-rose-500 text-rose-600" },
+};
 
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -41,15 +51,18 @@ export function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
 }
 
-// Month calendar + specialist filter + time-slot grid for the selected day.
-// Shared by the booking flow and every reschedule flow (patient + panel) so
-// picking a new time always looks and behaves the same, instead of a plain
-// <select> dropdown in some places and this calendar in others.
+// Month calendar + consultation-type filter + specialist filter + time-slot
+// grid for the selected day. Shared by the booking flow and every reschedule
+// flow (patient + panel) so picking a new time always looks and behaves the
+// same, instead of a plain <select> dropdown in some places and this
+// calendar in others.
 export function SlotPicker({
   slots,
   selectedSlot,
   onSelect,
   onDayChange,
+  services = [],
+  initialServiceType,
 }: {
   slots: Slot[];
   selectedSlot: Slot | null;
@@ -58,12 +71,20 @@ export function SlotPicker({
   // (e.g. the booking form) drop back to browsing instead of leaving a
   // stale slot/phase selected under the newly picked day.
   onDayChange?: () => void;
+  // Titles for the type filter's labels — reschedule flows (always a single
+  // service) can skip this since the filter only renders with 2+ types.
+  services?: Service[];
+  // Preselects the type filter (e.g. arriving via /book?service=X) without
+  // hiding the other types — the calendar still combines every type.
+  initialServiceType?: ServiceType;
 }) {
-  const days = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const s of slots) if (!seen.has(dateKey(s.startsAt))) seen.set(dateKey(s.startsAt), s.startsAt);
-    return [...seen.values()].sort();
-  }, [slots]);
+  const serviceTitleById = useMemo(() => new Map(services.map((s) => [s.id, s.title])), [services]);
+
+  const serviceTypesPresent = useMemo(() => {
+    const seen = new Map<ServiceType, string>();
+    for (const s of slots) if (!seen.has(s.serviceId)) seen.set(s.serviceId, serviceTitleById.get(s.serviceId) ?? s.serviceId);
+    return [...seen.entries()];
+  }, [slots, serviceTitleById]);
 
   const specialists = useMemo(() => {
     const seen = new Map<string, string>();
@@ -71,8 +92,18 @@ export function SlotPicker({
     return [...seen.entries()];
   }, [slots]);
 
-  const [selectedDay, setSelectedDay] = useState(days[0]);
+  const days = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const s of slots) if (!seen.has(dateKey(s.startsAt))) seen.set(dateKey(s.startsAt), s.startsAt);
+    return [...seen.values()].sort();
+  }, [slots]);
+
+  const [selectedDay, setSelectedDay] = useState(() => {
+    const relevant = initialServiceType ? slots.filter((s) => s.serviceId === initialServiceType) : slots;
+    return [...relevant].sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.startsAt;
+  });
   const [selectedSpecialist, setSelectedSpecialist] = useState<string>("all");
+  const [selectedServiceType, setSelectedServiceType] = useState<ServiceType | "all">(initialServiceType ?? "all");
   const [viewMonth, setViewMonth] = useState(() =>
     startOfMonth(days[0] ? new Date(days[0]) : new Date())
   );
@@ -80,6 +111,7 @@ export function SlotPicker({
   const slotsByDay = useMemo(() => {
     const map = new Map<string, Slot[]>();
     for (const s of slots) {
+      if (selectedServiceType !== "all" && s.serviceId !== selectedServiceType) continue;
       if (selectedSpecialist !== "all" && s.practitionerId !== selectedSpecialist) continue;
       const key = dateKey(s.startsAt);
       const bucket = map.get(key);
@@ -88,12 +120,13 @@ export function SlotPicker({
     }
     for (const bucket of map.values()) bucket.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
     return map;
-  }, [slots, selectedSpecialist]);
+  }, [slots, selectedSpecialist, selectedServiceType]);
 
   const monthGrid = useMemo(() => buildMonthGrid(viewMonth), [viewMonth]);
 
   const visibleSlots = slots
     .filter((s) => selectedDay && dateKey(s.startsAt) === dateKey(selectedDay))
+    .filter((s) => selectedServiceType === "all" || s.serviceId === selectedServiceType)
     .filter((s) => selectedSpecialist === "all" || s.practitionerId === selectedSpecialist)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 
@@ -102,8 +135,8 @@ export function SlotPicker({
       {/* month calendar — availability only exists within the 7-day publish
           horizon (listAvailableSlots), so most cells are simply unbookable */}
       <div className="overflow-hidden rounded-4xl border border-border bg-card">
-        <div className="flex items-center justify-between border-b border-border px-5 py-4">
-          <p className="text-lg font-bold capitalize text-secondary-foreground">
+        <div className="flex items-center justify-between border-b border-border px-6 py-5">
+          <p className="text-xl font-bold capitalize text-secondary-foreground">
             {viewMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
           </p>
           <div className="flex items-center gap-1">
@@ -135,7 +168,7 @@ export function SlotPicker({
 
         <div className="grid grid-cols-7 border-b border-border text-center text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           {WEEKDAY_LABELS.map((w) => (
-            <div key={w} className="py-2">
+            <div key={w} className="py-2.5">
               {w}
             </div>
           ))}
@@ -159,12 +192,12 @@ export function SlotPicker({
                   setSelectedDay(daySlots[0].startsAt);
                   onDayChange?.();
                 }}
-                className={`flex min-h-[84px] flex-col items-start gap-1 p-2 text-left transition-colors ${
+                className={`flex min-h-[112px] flex-col items-start gap-1 p-2.5 text-left transition-colors ${
                   hasSlots ? "cursor-pointer hover:bg-secondary" : "cursor-default"
                 } ${isSelected ? "bg-primary/10" : ""}`}
               >
                 <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm ${
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[15px] ${
                     isToday
                       ? "bg-primary font-semibold text-primary-foreground"
                       : inMonth
@@ -178,10 +211,13 @@ export function SlotPicker({
                   <span
                     className={`flex flex-col gap-0.5 text-[11px] ${isSelected ? "text-accent-foreground" : "text-muted-foreground"}`}
                   >
-                    {daySlots.slice(0, 2).map((s) => (
-                      <span key={`${s.practitionerId}|${s.startsAt}`}>{formatTime(s.startsAt)}</span>
+                    {daySlots.slice(0, 3).map((s) => (
+                      <span key={`${s.practitionerId}|${s.startsAt}`} className="flex items-center gap-1">
+                        <span className={`size-1.5 shrink-0 rounded-full ${SERVICE_TYPE_STYLES[s.serviceId].dot}`} />
+                        {formatTime(s.startsAt)}
+                      </span>
                     ))}
-                    {daySlots.length > 2 && <span>+{daySlots.length - 2} więcej</span>}
+                    {daySlots.length > 3 && <span>+{daySlots.length - 3} więcej</span>}
                   </span>
                 )}
               </button>
@@ -189,6 +225,37 @@ export function SlotPicker({
           })}
         </div>
       </div>
+
+      {serviceTypesPresent.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setSelectedServiceType("all")}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              selectedServiceType === "all"
+                ? "border-primary text-primary"
+                : "border-transparent bg-muted text-muted-foreground hover:text-secondary-foreground"
+            }`}
+          >
+            Wszystkie rodzaje
+          </button>
+          {serviceTypesPresent.map(([id, title]) => (
+            <button
+              type="button"
+              key={id}
+              onClick={() => setSelectedServiceType(id)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                selectedServiceType === id
+                  ? SERVICE_TYPE_STYLES[id].active
+                  : "border-transparent bg-muted text-muted-foreground hover:text-secondary-foreground"
+              }`}
+            >
+              <span className={`size-2 rounded-full ${SERVICE_TYPE_STYLES[id].dot}`} />
+              {title}
+            </button>
+          ))}
+        </div>
+      )}
 
       {specialists.length > 1 && (
         <div className="flex flex-wrap gap-2">
@@ -239,7 +306,13 @@ export function SlotPicker({
                   : "border-border bg-card text-secondary-foreground hover:border-secondary-foreground hover:bg-secondary"
               }`}
             >
-              <span>{formatTime(slot.startsAt)}</span>
+              <span className="flex items-center gap-1.5">
+                <span className={`size-1.5 rounded-full ${SERVICE_TYPE_STYLES[slot.serviceId].dot}`} />
+                {formatTime(slot.startsAt)}
+              </span>
+              {selectedServiceType === "all" && (
+                <span className="text-xs font-normal text-muted-foreground">{serviceTitleById.get(slot.serviceId)}</span>
+              )}
               {selectedSpecialist === "all" && (
                 <span className="text-xs font-normal text-muted-foreground">{slot.practitionerName}</span>
               )}

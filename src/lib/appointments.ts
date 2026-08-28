@@ -291,12 +291,30 @@ export async function confirmPayment(id: string, now = new Date()): Promise<Appo
     .single();
   if (error) throw error;
   const confirmed = fromRow(data as Row);
+  const practitioner = await getPractitioner(confirmed.practitionerId);
+
+  // Phone-only guest patients have no email on file — same silent fallback
+  // as applyCancel, since confirming must not fail just for lack of an inbox.
+  if (confirmed.patient.email) {
+    const when = new Date(confirmed.startsAt).toLocaleString("pl-PL", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const info = practitioner?.meetingInfo ? ` ${practitioner.meetingInfo}.` : "";
+    sendEmail(
+      confirmed.patient.email,
+      "Wizyta potwierdzona",
+      `Cześć ${confirmed.patient.name}, Twoja wizyta ${when} została potwierdzona.${info}`
+    );
+  }
 
   // ADHD diagnoza is the longest, highest-stakes session in this slice —
   // send an SMS reminder on top of the confirmation screen. No SMS provider
   // is wired up yet, so this is a stub (src/lib/sms.ts) same as OTP was.
   if (confirmed.serviceId === "adhd_diagnoza") {
-    const practitioner = await getPractitioner(confirmed.practitionerId);
     sendSms(confirmed.patient.phone, buildConfirmationSmsText(confirmed.startsAt, practitioner?.meetingInfo ?? null));
   }
 
@@ -371,7 +389,26 @@ async function applyReschedule(id: string, appt: Appointment, newStartsAt: strin
     .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
-  return fromRow(data as Row);
+  const rescheduled = fromRow(data as Row);
+
+  // Phone-only guest patients have no email on file — same silent fallback
+  // as applyCancel/confirmPayment.
+  if (rescheduled.patient.email) {
+    const when = new Date(rescheduled.startsAt).toLocaleString("pl-PL", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    sendEmail(
+      rescheduled.patient.email,
+      "Wizyta przełożona",
+      `Cześć ${rescheduled.patient.name}, Twoja wizyta została przełożona na ${when}. Specjalista, cena i forma wizyty pozostają bez zmian.`
+    );
+  }
+
+  return rescheduled;
 }
 
 // Rules are enforced here, not just hidden in the UI — this is the trust
