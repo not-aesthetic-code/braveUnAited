@@ -1,8 +1,6 @@
 import { redirect } from "next/navigation";
-import { Button } from "@/components/ui/button";
 import { getAppointmentsForPractitioner, getPatientsToRemind, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
-import { createClient } from "@/lib/supabase/server";
-import { logoutAction } from "./actions";
+import { getPractitionerSession } from "@/lib/panel-auth";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -13,16 +11,8 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default async function DoctorPanelPage() {
-  const supabase = await createClient();
-  const { data } = await supabase.auth.getClaims();
-  const claims = data?.claims;
-  // The auth metadata key stays `specialist_id` even after the DB rename to
-  // `practitioners` — it's already provisioned on live Supabase Auth users
-  // (scripts/seed-doctors.ts), and renaming it would log every doctor out
-  // until the seed script reran.
-  const practitionerId = claims?.app_metadata?.specialist_id as string | undefined;
-
-  if (!claims || !practitionerId) redirect("/panel/login");
+  const { practitionerId } = await getPractitionerSession();
+  if (!practitionerId) redirect("/panel/login");
 
   const [appointments, reminders] = await Promise.all([
     getAppointmentsForPractitioner(practitionerId),
@@ -30,15 +20,10 @@ export default async function DoctorPanelPage() {
   ]);
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-16">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Panel specjalisty</h1>
-          <p className="text-sm text-muted-foreground">{claims.email as string}</p>
-        </div>
-        <form action={logoutAction}>
-          <Button type="submit" variant="outline">Wyloguj</Button>
-        </form>
+    <div className="flex flex-col gap-6">
+      <div>
+        <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Panel specjalisty</p>
+        <h1 className="text-2xl font-bold tracking-tight">Wizyty</h1>
       </div>
 
       {reminders.length > 0 && (

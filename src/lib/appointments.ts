@@ -684,3 +684,92 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
   }
   return slots;
 }
+
+// --- Practitioner-facing weekly rhythm editor (/panel/dostepnosc) ---------
+
+// The two service tabs this screen manages. adhd_diagnoza/asystent_zdrowienia/
+// bezplatna keep whatever calendar_availability rows they already have —
+// no screen edits them yet.
+export type ManagedAvailabilityService = "pelnoplatna" | "niskoplatna";
+
+export type WeeklyAvailabilityRange = {
+  id: string;
+  dayOfWeek: number; // 0=Sunday..6=Saturday, matches the DB check constraint
+  startTime: string; // "HH:MM"
+  endTime: string;
+};
+
+async function getCalendarId(practitionerId: string): Promise<string> {
+  const { data, error } = await db()
+    .from("calendars")
+    .select("id")
+    .eq("practitioner_id", practitionerId)
+    .single();
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function getWeeklyAvailability(
+  practitionerId: string
+): Promise<Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_availability")
+    .select("id, service_id, day_of_week, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .in("service_id", ["pelnoplatna", "niskoplatna"])
+    .order("day_of_week")
+    .order("start_time");
+  if (error) throw error;
+
+  const result: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]> = {
+    pelnoplatna: [],
+    niskoplatna: [],
+  };
+  for (const row of (data ?? []) as {
+    id: string;
+    service_id: ManagedAvailabilityService;
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+  }[]) {
+    result[row.service_id].push({
+      id: row.id,
+      dayOfWeek: row.day_of_week,
+      startTime: row.start_time.slice(0, 5),
+      endTime: row.end_time.slice(0, 5),
+    });
+  }
+  return result;
+}
+
+// Replace-all for one practitioner's one service tab. Not a single DB
+// transaction (delete then insert as two calls) — acceptable here since this
+// is a low-traffic admin screen with no concurrent writers per calendar.
+export async function replaceWeeklyAvailability(
+  practitionerId: string,
+  serviceId: ManagedAvailabilityService,
+  ranges: { dayOfWeek: number; startTime: string; endTime: string }[]
+): Promise<void> {
+  const calendarId = await getCalendarId(practitionerId);
+
+  const { error: deleteError } = await db()
+    .from("calendar_availability")
+    .delete()
+    .eq("calendar_id", calendarId)
+    .eq("service_id", serviceId);
+  if (deleteError) throw deleteError;
+
+  if (ranges.length === 0) return;
+
+  const { error: insertError } = await db().from("calendar_availability").insert(
+    ranges.map((r) => ({
+      calendar_id: calendarId,
+      service_id: serviceId,
+      day_of_week: r.dayOfWeek,
+      start_time: r.startTime,
+      end_time: r.endTime,
+    }))
+  );
+  if (insertError) throw insertError;
+}
