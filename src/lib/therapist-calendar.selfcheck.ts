@@ -6,6 +6,8 @@ import {
   gridDates,
   gridHours,
   hourBoundsFor,
+  shiftGridWeeks,
+  weeksBetween,
   hourStateAt,
   isBookableState,
   minutesOfEligibleAvailability,
@@ -160,6 +162,25 @@ assert.equal(
   isBookableState(hourStateAt({ date: "2026-09-01", hour: 10, rhythm: otherRhythm, overrides: [], booked: [] })),
   false,
   "outside the other tab's rhythm there is nothing to protect",
+);
+
+// Stepping the grid to other weeks, so absences can be marked ahead of time.
+assert.equal(shiftGridWeeks("2026-08-28", 1), "2026-09-04");
+assert.equal(shiftGridWeeks("2026-08-28", -1), "2026-08-21");
+assert.equal(shiftGridWeeks("2026-08-28", 0), "2026-08-28");
+assert.equal(shiftGridWeeks("2026-12-28", 1), "2027-01-04", "stepping across a year boundary");
+assert.equal(
+  shiftGridWeeks("2026-10-24", 1),
+  "2026-10-31",
+  "the week of the daylight-saving change is still seven days long",
+);
+assert.equal(weeksBetween("2026-08-28", "2026-09-11"), 2);
+assert.equal(weeksBetween("2026-08-28", "2026-08-21"), -1);
+assert.equal(weeksBetween("2026-08-28", "2026-08-28"), 0);
+assert.equal(
+  weeksBetween("2026-10-24", "2026-10-31"),
+  1,
+  "a 25-hour day must not round the week count down to zero",
 );
 
 console.log("therapist calendar self-check passed");
