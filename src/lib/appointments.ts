@@ -1258,6 +1258,24 @@ export async function getBookedVisits(
     });
 }
 
+// One week of hour-grid data across every enabled service at once — shared
+// by the initial page render and loadHourGridWeekAction (stepping the grid
+// to another week), so the two never drift on how a week's data is shaped.
+export async function getHourGridWeekData(
+  practitionerId: string,
+  serviceIds: readonly ServiceType[],
+  fromDate: string
+): Promise<{ overrides: Partial<Record<ServiceType, StoredHourOverride[]>>; visits: PanelVisit[] }> {
+  const [overridesByService, visits] = await Promise.all([
+    Promise.all(serviceIds.map((id) => getHourOverrides(practitionerId, id, fromDate))),
+    getBookedVisits(practitionerId, fromDate),
+  ]);
+  const overrides = Object.fromEntries(serviceIds.map((id, index) => [id, overridesByService[index]])) as Partial<
+    Record<ServiceType, StoredHourOverride[]>
+  >;
+  return { overrides, visits };
+}
+
 /**
  * Insert or delete the single exception row behind one grid cell. `clear`
  * deletes it so the hour falls back to whatever the weekly rhythm says,

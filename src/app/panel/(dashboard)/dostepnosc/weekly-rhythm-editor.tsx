@@ -6,16 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type {
-  PanelVisit,
-  Service,
-  ServiceType,
-  StoredHourOverride,
-  WeeklyAvailabilityRange,
-} from "@/lib/appointments";
+import type { Service, ServiceType, WeeklyAvailabilityRange } from "@/lib/appointments";
 import { timeToMinutes, validateWeeklyRanges } from "@/lib/therapist-calendar";
 import { saveWeeklyAvailabilityAction } from "./actions";
 import { HourOverridesGrid } from "./hour-overrides-grid";
+import type { HourGridWeek } from "./hour-overrides-actions";
 
 // UI is Monday-first; dayOfWeek matches the DB (0=Sunday..6=Saturday).
 const DAYS = [
@@ -93,11 +88,7 @@ export function WeeklyRhythmEditor({
   // them because each service keeps a genuinely separate schedule — a
   // second tab strip would let you read one service's rhythm against
   // another service's grid.
-  hourGrid: {
-    fromDate: string;
-    overrides: Partial<Record<ServiceType, StoredHourOverride[]>>;
-    visits: PanelVisit[];
-  };
+  hourGrid: HourGridWeek;
 }) {
   const serviceIds = enabledServices.map((e) => e.service.id);
   const serviceById = new Map(enabledServices.map((e) => [e.service.id, e.service]));
@@ -183,19 +174,17 @@ export function WeeklyRhythmEditor({
               />
               <HourOverridesGrid
                 serviceId={service.id}
-                fromDate={hourGrid.fromDate}
+                initialWeek={hourGrid}
                 rhythm={ranges[service.id] ?? []}
-                overrides={hourGrid.overrides[service.id] ?? []}
-                visits={hourGrid.visits}
                 otherServices={serviceIds
                   .filter((other) => other !== service.id)
                   .map((other) => ({
+                    serviceId: other,
                     label: tabLabel(serviceById.get(other)!),
                     // The live editor state, not the saved rows: the warning
                     // has to judge the schedule the practitioner is looking
                     // at right now.
                     rhythm: ranges[other] ?? [],
-                    overrides: hourGrid.overrides[other] ?? [],
                   }))}
               />
             </div>

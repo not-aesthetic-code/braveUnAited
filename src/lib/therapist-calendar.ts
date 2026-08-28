@@ -301,6 +301,23 @@ export function gridDates(from: string): string[] {
   return Array.from({ length: GRID_DAYS }, (_, index) => addUtcDays(from, index));
 }
 
+/**
+ * Move a grid anchor by whole weeks. Exported so the panel never does date
+ * arithmetic with local Date objects, which would drift by an hour across a
+ * daylight-saving boundary and silently show the wrong week.
+ */
+export function shiftGridWeeks(from: string, weeks: number): string {
+  if (!DATE_RE.test(from)) throw new Error("Invalid grid start date");
+  return addUtcDays(from, weeks * GRID_DAYS);
+}
+
+/** Whole weeks between two anchors; negative means `to` is in the past. */
+export function weeksBetween(from: string, to: string): number {
+  const day = 86_400_000;
+  const diff = (new Date(`${to}T12:00:00Z`).getTime() - new Date(`${from}T12:00:00Z`).getTime()) / day;
+  return Math.round(diff / GRID_DAYS);
+}
+
 /** 0=Sunday..6=Saturday, matching calendar_availability.day_of_week. */
 export function dayOfWeekOf(date: string): number {
   return new Date(`${date}T12:00:00Z`).getUTCDay();

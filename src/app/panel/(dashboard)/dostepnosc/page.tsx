@@ -1,13 +1,10 @@
 import { redirect } from "next/navigation";
 import {
   getAppointmentsForPractitioner,
-  getBookedVisits,
   getEnabledServiceIds,
-  getHourOverrides,
+  getHourGridWeekData,
   getServices,
   getWeeklyHoursSummary,
-  type ServiceType,
-  type StoredHourOverride,
 } from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
 import { startOfWarsawWeek } from "@/lib/therapist-calendar";
@@ -30,18 +27,14 @@ export default async function DostepnoscPage() {
   const fromDate = warsawToday();
   const enabledIds = await getEnabledServiceIds(practitionerId);
 
-  const [allServices, availability, appointments, overridesByService, visits] = await Promise.all([
+  const [allServices, availability, appointments, { overrides, visits }] = await Promise.all([
     getServices(),
     getWeeklyHoursSummary(practitionerId, enabledIds),
     getAppointmentsForPractitioner(practitionerId),
-    Promise.all(enabledIds.map((id) => getHourOverrides(practitionerId, id, fromDate))),
-    getBookedVisits(practitionerId, fromDate),
+    getHourGridWeekData(practitionerId, enabledIds, fromDate),
   ]);
 
   const servicesById = new Map(allServices.map((s) => [s.id, s]));
-  const overrides = Object.fromEntries(
-    enabledIds.map((id, index) => [id, overridesByService[index]])
-  ) as Partial<Record<ServiceType, StoredHourOverride[]>>;
 
   const enabledServices = enabledIds.map((id) => {
     const service = servicesById.get(id);

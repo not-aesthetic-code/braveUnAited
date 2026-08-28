@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { TriangleAlertIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import type { PanelVisit, ServiceType, StoredHourOverride } from "@/lib/appointments";
 import {
@@ -10,14 +11,15 @@ import {
   gridHours,
   hourBoundsFor,
   hourStateAt,
+  shiftGridWeeks,
+  weeksBetween,
   isBookableState,
   nextOverride,
   type HourCellState,
-  type HourOverride,
   type RhythmRange,
 } from "@/lib/therapist-calendar";
 import { cn } from "@/lib/utils";
-import { toggleHourOverrideAction } from "./hour-overrides-actions";
+import { loadHourGridWeekAction, toggleHourOverrideAction, type HourGridWeek } from "./hour-overrides-actions";
 
 const SHORT_DAYS = ["ndz", "pon", "wt", "śr", "czw", "pt", "sob"];
 const ROW_HEIGHT = "2.5rem";
@@ -67,50 +69,60 @@ const PAYMENT_LABEL: Record<string, string> = {
 
 type Props = {
   serviceId: ServiceType;
-  fromDate: string;
+  /** The week the server rendered — always the current one. */
+  initialWeek: HourGridWeek;
   /**
    * The rhythm currently shown in the editor above — including edits that
    * have not been saved yet, so opening 06:00 there fills the 06:00 row here
-   * immediately instead of after a round trip.
+   * immediately instead of after a round trip. Weekday-based, so it applies
+   * to every week the grid can be stepped to.
    */
   rhythm: RhythmRange[];
-  overrides: StoredHourOverride[];
   /**
-   * Every booked visit, whatever service it belongs to. One practitioner has
-   * one physical calendar: an hour sold as a pełnopłatna visit is gone for
-   * niskopłatna too, so both tabs must show it as taken.
-   */
-  visits: PanelVisit[];
-  /**
-   * The other consultation types on this screen. Closing an hour here only
+   * The other enabled services on this screen. Closing an hour here only
    * closes it here, so the practitioner has to be told when the same hour is
    * still open somewhere else — otherwise "wyłączone" reads as "wolne", and
    * a patient books the slot they meant to protect.
    */
   otherServices: {
+    serviceId: ServiceType;
     label: string;
     rhythm: RhythmRange[];
-    overrides: HourOverride[];
   }[];
 };
 
 type CrossServiceNotice = { date: string; hour: number; services: string[] };
 
-export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visits, otherServices }: Props) {
-  const [state, setState] = useState(overrides);
+export function HourOverridesGrid({ serviceId, initialWeek, rhythm, otherServices }: Props) {
+  const [week, setWeek] = useState(initialWeek);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<PanelVisit | null>(null);
   const [notice, setNotice] = useState<CrossServiceNotice | null>(null);
-  const [, startTransition] = useTransition();
+  const [pending, startTransition] = useTransition();
 
-  // The server is the source of truth: a save or a revalidate brings fresh
-  // rows and the optimistic copy has to step aside. Adjusted during render
-  // rather than in an effect, so there is no extra committed pass showing
-  // stale cells (React's "adjusting state when a prop changes" pattern).
-  const [lastServerOverrides, setLastServerOverrides] = useState(overrides);
-  if (lastServerOverrides !== overrides) {
-    setLastServerOverrides(overrides);
-    setState(overrides);
+  // The server is the source of truth for the week it rendered: a save or a
+  // revalidate brings fresh rows and the optimistic copy has to step aside.
+  // Adjusted during render rather than in an effect, so there is no extra
+  // committed pass showing stale cells. Skipped once the practitioner has
+  // stepped to another week — that data did not come from this prop.
+  const [lastInitialWeek, setLastInitialWeek] = useState(initialWeek);
+  if (lastInitialWeek !== initialWeek) {
+    setLastInitialWeek(initialWeek);
+    if (week.fromDate === initialWeek.fromDate) setWeek(initialWeek);
+  }
+
+  const overrides = week.overrides[serviceId] ?? [];
+  const weekOffset = weeksBetween(initialWeek.fromDate, week.fromDate);
+
+  function goToWeek(fromDate: string) {
+    if (fromDate === week.fromDate) return;
+    setError(null);
+    setNotice(null);
+    startTransition(async () => {
+      const result = await loadHourGridWeekAction(fromDate);
+      if (result.ok) setWeek(result.week);
+      else setError(result.error);
+    });
   }
 
   function toggle(date: string, hour: number, cellState: HourCellState) {
@@ -122,13 +134,19 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
     // where that hour is genuinely still bookable — an hour nobody offers
     // needs no warning, and repeating it after every click would train the
     // practitioner to ignore it.
-    const booked = visits.map(({ date: day, startHour, endHour }) => ({ date: day, startHour, endHour }));
+    const booked = week.visits.map(({ date: day, startHour, endHour }) => ({ date: day, startHour, endHour }));
     const stillOpen =
       intent === "closed"
         ? otherServices
             .filter((other) =>
               isBookableState(
-                hourStateAt({ date, hour, rhythm: other.rhythm, overrides: other.overrides, booked }),
+                hourStateAt({
+                  date,
+                  hour,
+                  rhythm: other.rhythm,
+                  overrides: week.overrides[other.serviceId] ?? [],
+                  booked,
+                }),
               ),
             )
             .map((other) => other.label)
@@ -138,14 +156,20 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
     // Optimistic: the grid is a click-heavy surface and a round trip per cell
     // would make it feel broken. A failed write rolls back to exactly the
     // list we had before this click.
-    const previous = state;
-    const withoutCell = state.filter((item) => !(item.date === date && item.hour === hour));
-    setState(intent === "clear" ? withoutCell : [...withoutCell, { date, hour, kind: intent }]);
+    const previous = week;
+    const withoutCell = overrides.filter((item) => !(item.date === date && item.hour === hour));
+    setWeek({
+      ...week,
+      overrides: {
+        ...week.overrides,
+        [serviceId]: intent === "clear" ? withoutCell : [...withoutCell, { date, hour, kind: intent }],
+      },
+    });
 
     startTransition(async () => {
       const result = await toggleHourOverrideAction({ serviceId, date, hour, intent });
       if (!result.ok) {
-        setState(previous);
+        setWeek(previous);
         setError(result.error);
       }
     });
@@ -155,10 +179,14 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
     <div className="flex flex-col gap-4">
       {error && <p className="text-sm text-destructive">{error}</p>}
       <ServiceGrid
-        fromDate={fromDate}
+        fromDate={week.fromDate}
+        weekOffset={weekOffset}
+        pending={pending}
+        onGoToWeek={goToWeek}
+        onToday={() => goToWeek(initialWeek.fromDate)}
         rhythm={rhythm}
-        overrides={state}
-        visits={visits}
+        overrides={overrides}
+        visits={week.visits}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
         onToggle={toggle}
@@ -171,6 +199,10 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
 
 function ServiceGrid({
   fromDate,
+  weekOffset,
+  pending,
+  onGoToWeek,
+  onToday,
   rhythm,
   overrides,
   visits,
@@ -180,6 +212,10 @@ function ServiceGrid({
   onOpenVisit,
 }: {
   fromDate: string;
+  weekOffset: number;
+  pending: boolean;
+  onGoToWeek: (fromDate: string) => void;
+  onToday: () => void;
   rhythm: RhythmRange[];
   overrides: StoredHourOverride[];
   visits: PanelVisit[];
@@ -255,6 +291,47 @@ function ServiceGrid({
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/50 px-2 py-1.5">
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={pending}
+            onClick={() => onGoToWeek(shiftGridWeeks(fromDate, -1))}
+            aria-label="Poprzedni tydzień"
+          >
+            <ChevronLeftIcon className="size-4" />
+          </Button>
+          <span className="min-w-44 text-center text-sm font-medium tabular-nums">{rangeLabel(dates)}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={pending}
+            onClick={() => onGoToWeek(shiftGridWeeks(fromDate, 1))}
+            aria-label="Następny tydzień"
+          >
+            <ChevronRightIcon className="size-4" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{offsetLabel(weekOffset)}</span>
+          {weekOffset !== 0 && (
+            <Button type="button" variant="outline" size="sm" disabled={pending} onClick={onToday}>
+              Ten tydzień
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {weekOffset > 0 && (
+        <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+          Pacjenci widzą terminy najwyżej 7 dni do przodu, więc w tym tygodniu nikt jeszcze nic nie zarezerwuje.
+          Zaznaczone tu nieobecności czekają i zadziałają, gdy okno rezerwacji do nich dojdzie.
+        </p>
+      )}
+
       <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">
         <Legend className={CELL_STYLE.rhythm}>z rytmu tygodniowego</Legend>
         <Legend className={CELL_STYLE.added}>dodana ręcznie (+)</Legend>
@@ -266,7 +343,7 @@ function ServiceGrid({
         ))}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className={cn("overflow-x-auto transition-opacity", pending && "pointer-events-none opacity-50")}>
         <div
           className="grid min-w-[700px] gap-1"
           style={{
@@ -400,6 +477,37 @@ function HowItWorksNote() {
       </button>
     </div>
   );
+}
+
+/** "28 sie – 3 wrz" — the span the grid is currently showing. */
+function rangeLabel(dates: string[]): string {
+  const format = (date: string, withYear: boolean) =>
+    new Intl.DateTimeFormat("pl-PL", {
+      timeZone: "Europe/Warsaw",
+      day: "numeric",
+      month: "short",
+      ...(withYear ? { year: "numeric" } : {}),
+    }).format(new Date(`${date}T12:00:00Z`));
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  return `${format(first, false)} – ${format(last, first.slice(0, 4) !== last.slice(0, 4))}`;
+}
+
+/** Polish counts weeks in three forms: 1 tydzień, 2-4 tygodnie, 5+ tygodni. */
+function weekNoun(count: number): string {
+  if (count === 1) return "tydzień";
+  const lastTwo = count % 100;
+  const last = count % 10;
+  const few = last >= 2 && last <= 4 && !(lastTwo >= 12 && lastTwo <= 14);
+  return few ? "tygodnie" : "tygodni";
+}
+
+function offsetLabel(weeks: number): string {
+  if (weeks === 0) return "ten tydzień";
+  if (weeks === 1) return "za tydzień";
+  if (weeks === -1) return "tydzień temu";
+  const count = Math.abs(weeks);
+  return weeks > 0 ? `za ${count} ${weekNoun(count)}` : `${count} ${weekNoun(count)} temu`;
 }
 
 function CrossServiceNotice({ notice, onDismiss }: { notice: CrossServiceNotice; onDismiss: () => void }) {
