@@ -67,7 +67,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
 
   const specialists = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const s of slots) seen.set(s.specialistId, s.specialistName);
+    for (const s of slots) seen.set(s.practitionerId, s.practitionerName);
     return [...seen.entries()];
   }, [slots]);
 
@@ -80,7 +80,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
   const slotsByDay = useMemo(() => {
     const map = new Map<string, Slot[]>();
     for (const s of slots) {
-      if (selectedSpecialist !== "all" && s.specialistId !== selectedSpecialist) continue;
+      if (selectedSpecialist !== "all" && s.practitionerId !== selectedSpecialist) continue;
       const key = dateKey(s.startsAt);
       const bucket = map.get(key);
       if (bucket) bucket.push(s);
@@ -104,7 +104,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
 
   const visibleSlots = slots
     .filter((s) => selectedDay && dateKey(s.startsAt) === dateKey(selectedDay))
-    .filter((s) => selectedSpecialist === "all" || s.specialistId === selectedSpecialist)
+    .filter((s) => selectedSpecialist === "all" || s.practitionerId === selectedSpecialist)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 
   const msLeft = useCountdown(phase === "held" ? appt?.heldUntil : undefined);
@@ -123,7 +123,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
     setError(null);
     startTransition(async () => {
       const result = await holdSlotAction({
-        specialistId: selectedSlot.specialistId,
+        practitionerId: selectedSlot.practitionerId,
         serviceType,
         startsAt: selectedSlot.startsAt,
         // ponytail: email left "" when not given — PatientContact stays a plain
@@ -243,7 +243,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
                 {hasSlots && (
                   <span className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
                     {daySlots.slice(0, 2).map((s) => (
-                      <span key={`${s.specialistId}|${s.startsAt}`}>{formatTime(s.startsAt)}</span>
+                      <span key={`${s.practitionerId}|${s.startsAt}`}>{formatTime(s.startsAt)}</span>
                     ))}
                     {daySlots.length > 2 && <span>+{daySlots.length - 2} więcej</span>}
                   </span>
@@ -285,13 +285,13 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
           )}
           {visibleSlots.map((slot) => (
             <button
-              key={`${slot.specialistId}|${slot.startsAt}`}
+              key={`${slot.practitionerId}|${slot.startsAt}`}
               onClick={() => pickSlot(slot)}
               className="flex flex-col rounded-lg border bg-card px-3 py-2 text-sm hover:bg-muted"
             >
               <span className="font-medium">{formatTime(slot.startsAt)}</span>
               {selectedSpecialist === "all" && (
-                <span className="text-xs text-muted-foreground">{slot.specialistName}</span>
+                <span className="text-xs text-muted-foreground">{slot.practitionerName}</span>
               )}
             </button>
           ))}
@@ -301,7 +301,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
       {phase === "form" && selectedSlot && (
         <div className="rounded-xl border bg-card p-5">
           <p className="font-medium">
-            {selectedSlot.specialistName} · {formatDay(selectedSlot.startsAt)}, {formatTime(selectedSlot.startsAt)}
+            {selectedSlot.practitionerName} · {formatDay(selectedSlot.startsAt)}, {formatTime(selectedSlot.startsAt)}
           </p>
           <p className="text-sm text-muted-foreground">
             {selectedSlot.price > 0 ? `${selectedSlot.price} zł` : "Bezpłatnie"} · termin trzymamy 10 minut
@@ -342,7 +342,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
       {phase === "held" && appt && selectedSlot && (
         <div className="rounded-xl border bg-card p-5">
           <p className="font-medium">
-            {selectedSlot.specialistName} · {formatDay(appt.startsAt)}, {formatTime(appt.startsAt)}
+            {selectedSlot.practitionerName} · {formatDay(appt.startsAt)}, {formatTime(appt.startsAt)}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
             Termin zarezerwowany dla Ciebie jeszcze przez{" "}

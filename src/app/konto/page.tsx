@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { getAppointmentsForPatientEmail, SERVICE_LABELS } from "@/lib/appointments";
+import { getAppointmentsForPatientEmail } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 import { logoutAction } from "./actions";
 
@@ -45,7 +45,7 @@ export default async function PatientAccountPage() {
             href={`/my-booking/${appt.id}`}
             className="rounded-xl border bg-card p-5 transition-colors hover:bg-muted"
           >
-            <p className="font-medium">{SERVICE_LABELS[appt.serviceType].title}</p>
+            <p className="font-medium">{appt.service.title}</p>
             <p className="text-sm text-muted-foreground">
               {new Date(appt.startsAt).toLocaleString("pl-PL", {
                 weekday: "long",

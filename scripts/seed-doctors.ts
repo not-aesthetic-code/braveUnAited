@@ -1,7 +1,10 @@
-// One-off: creates/updates a Supabase Auth user per row in `specialists`, so
-// each doctor can log in to /panel and see only their own visits (matched
+// One-off: creates/updates a Supabase Auth user per row in `practitioners`,
+// so each doctor can log in to /panel and see only their own visits (matched
 // via app_metadata.specialist_id, which RLS/app code trusts because it's
-// only settable through the service_role key, never by the user).
+// only settable through the service_role key, never by the user). That
+// metadata key stays `specialist_id` even after the `specialists` table was
+// renamed to `practitioners` — it's already live on created accounts, and
+// renaming it would log every doctor out until this script reran.
 //
 // Run with: pnpm seed:doctors
 import { createClient } from "@supabase/supabase-js";
@@ -22,7 +25,7 @@ async function main() {
     auth: { persistSession: false },
   });
 
-  const { data: specialists, error } = await db.from("specialists").select("id, name");
+  const { data: practitioners, error } = await db.from("practitioners").select("id, name");
   if (error) throw error;
 
   const { data: existing, error: listError } = await db.auth.admin.listUsers();
@@ -30,7 +33,7 @@ async function main() {
 
   const credentials: { name: string; email: string; password: string }[] = [];
 
-  for (const spec of specialists ?? []) {
+  for (const spec of practitioners ?? []) {
     const email = emailFor(spec.name);
     const user = existing.users.find((u) => u.email === email);
 

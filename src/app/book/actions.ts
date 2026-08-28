@@ -5,7 +5,6 @@ import {
   confirmPayment,
   getAppointment,
   holdSlot,
-  SERVICE_LABELS,
   type PatientContact,
   type ServiceType,
 } from "@/lib/appointments";
@@ -18,7 +17,7 @@ function toError(e: unknown): string {
 }
 
 export async function holdSlotAction(input: {
-  specialistId: string;
+  practitionerId: string;
   serviceType: ServiceType;
   startsAt: string;
   patientContact: PatientContact;
@@ -49,12 +48,12 @@ export async function startPaymentAction(
     const origin = (await headers()).get("origin") ?? "http://localhost:3000";
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      ...(appt.patientContact.email ? { customer_email: appt.patientContact.email } : {}),
+      ...(appt.patient.email ? { customer_email: appt.patient.email } : {}),
       line_items: [
         {
           price_data: {
             currency: "pln",
-            product_data: { name: SERVICE_LABELS[appt.serviceType].title },
+            product_data: { name: appt.service.title },
             unit_amount: appt.price * 100,
           },
           quantity: 1,

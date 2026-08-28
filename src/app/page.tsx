@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { LoginDialog } from "@/components/login-dialog";
-import { priceLabel, SERVICE_LABELS, type ServiceType } from "@/lib/appointments";
+import { listServicesWithPricing } from "@/lib/appointments";
 
-const SERVICES = Object.keys(SERVICE_LABELS) as ServiceType[];
-
-export default function Home() {
+export default async function Home() {
+  const services = await listServicesWithPricing();
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b px-6 py-4">
@@ -27,20 +26,17 @@ export default function Home() {
         </div>
 
         <div className="grid w-full max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2">
-          {SERVICES.map((service) => {
-            const label = SERVICE_LABELS[service];
-            return (
-              <Link
-                key={service}
-                href={`/book?service=${service}`}
-                className="flex flex-col items-start gap-1 rounded-xl border bg-card p-5 text-left transition-colors hover:bg-muted"
-              >
-                <span className="font-medium">{label.title}</span>
-                <span className="text-sm text-muted-foreground">{label.description}</span>
-                <span className="mt-2 text-sm font-semibold">{priceLabel(service)}</span>
-              </Link>
-            );
-          })}
+          {services.map(({ service, priceLabel }) => (
+            <Link
+              key={service.id}
+              href={`/book?service=${service.id}`}
+              className="flex flex-col items-start gap-1 rounded-xl border bg-card p-5 text-left transition-colors hover:bg-muted"
+            >
+              <span className="font-medium">{service.title}</span>
+              <span className="text-sm text-muted-foreground">{service.description}</span>
+              <span className="mt-2 text-sm font-semibold">{priceLabel}</span>
+            </Link>
+          ))}
         </div>
       </main>
     </div>

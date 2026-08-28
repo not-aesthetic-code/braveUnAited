@@ -7,11 +7,13 @@ import { confirmPayment, holdSlot } from "../src/lib/appointments";
 
 const DAY_MS = 24 * 3_600_000;
 
+// Distinct phones per demo patient — patients dedup by phone, so sharing one
+// number across all four would collapse them into a single patient record.
 const demoAppointments = [
-  { specialistId: "spec-1", serviceType: "niskoplatna" as const, daysAhead: 2, hour: 10, patient: "Kasia Zielińska" },
-  { specialistId: "spec-1", serviceType: "pelnoplatna" as const, daysAhead: 3, hour: 12, patient: "Tomasz Krawczyk" },
-  { specialistId: "spec-2", serviceType: "adhd_diagnoza" as const, daysAhead: 2, hour: 14, patient: "Piotr Malinowski" },
-  { specialistId: "spec-3", serviceType: "bezplatna" as const, daysAhead: 4, hour: 9, patient: "Ewa Sokołowska" },
+  { practitionerId: "spec-1", serviceType: "niskoplatna" as const, daysAhead: 2, hour: 10, patient: "Kasia Zielińska", phone: "500100201" },
+  { practitionerId: "spec-1", serviceType: "pelnoplatna" as const, daysAhead: 3, hour: 12, patient: "Tomasz Krawczyk", phone: "500100202" },
+  { practitionerId: "spec-2", serviceType: "adhd_diagnoza" as const, daysAhead: 2, hour: 14, patient: "Piotr Malinowski", phone: "500100203" },
+  { practitionerId: "spec-3", serviceType: "bezplatna" as const, daysAhead: 4, hour: 9, patient: "Ewa Sokołowska", phone: "500100204" },
 ];
 
 async function main() {
@@ -23,15 +25,15 @@ async function main() {
 
     const held = await holdSlot(
       {
-        specialistId: demo.specialistId,
+        practitionerId: demo.practitionerId,
         serviceType: demo.serviceType,
         startsAt: startsAt.toISOString(),
-        patientContact: { name: demo.patient, email: `${demo.patient.split(" ")[0].toLowerCase()}@example.com`, phone: "500100200" },
+        patientContact: { name: demo.patient, email: `${demo.patient.split(" ")[0].toLowerCase()}@example.com`, phone: demo.phone },
       },
       now
     );
     await confirmPayment(held.id, now);
-    console.log(`confirmed ${demo.specialistId} ${demo.serviceType} @ ${startsAt.toISOString()} for ${demo.patient}`);
+    console.log(`confirmed ${demo.practitionerId} ${demo.serviceType} @ ${startsAt.toISOString()} for ${demo.patient}`);
   }
 }
 

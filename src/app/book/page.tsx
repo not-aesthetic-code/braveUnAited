@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { listAvailableSlots, SERVICE_LABELS, type ServiceType } from "@/lib/appointments";
+import { getService, listAvailableSlots, SERVICE_TYPES, type ServiceType } from "@/lib/appointments";
 import { BookingFlow } from "./BookingFlow";
 
 function isServiceType(value: string | undefined): value is ServiceType {
-  return !!value && value in SERVICE_LABELS;
+  return !!value && (SERVICE_TYPES as readonly string[]).includes(value);
 }
 
 export default async function BookPage(props: PageProps<"/book">) {
@@ -19,13 +19,13 @@ export default async function BookPage(props: PageProps<"/book">) {
     );
   }
 
-  const slots = await listAvailableSlots(serviceType);
+  const [slots, serviceInfo] = await Promise.all([listAvailableSlots(serviceType), getService(serviceType)]);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-16">
       <div>
         <Link href="/" className="text-sm text-muted-foreground hover:underline">← Wróć</Link>
-        <h1 className="mt-2 text-2xl font-bold tracking-tight">{SERVICE_LABELS[serviceType].title}</h1>
+        <h1 className="mt-2 text-2xl font-bold tracking-tight">{serviceInfo?.title}</h1>
         <p className="text-muted-foreground">Wybierz dzień, specjalistę i wolny termin.</p>
       </div>
 

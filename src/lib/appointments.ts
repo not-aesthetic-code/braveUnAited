@@ -3,12 +3,19 @@
 // server-only (Server Components / Server Actions), so that key never
 // reaches the browser.
 
-export type ServiceType =
-  | "niskoplatna"
-  | "pelnoplatna"
-  | "adhd_diagnoza"
-  | "asystent_zdrowienia"
-  | "bezplatna";
+// Service catalog now lives in the `services` table (title/description/
+// duration/buffer/price), but the set of ids is small and fixed enough that
+// keeping a compile-time union here is worth it — callers like
+// isServiceType() in book/page.tsx need to validate an untrusted query param
+// without a DB round trip.
+export const SERVICE_TYPES = [
+  "niskoplatna",
+  "pelnoplatna",
+  "adhd_diagnoza",
+  "asystent_zdrowienia",
+  "bezplatna",
+] as const;
+export type ServiceType = (typeof SERVICE_TYPES)[number];
 
 export type AppointmentStatus =
   | "held"
@@ -19,14 +26,31 @@ export type AppointmentStatus =
 
 export type PatientContact = { name: string; email: string; phone: string };
 
+export type Service = {
+  id: ServiceType;
+  title: string;
+  description: string;
+  durationMinutes: number;
+  bufferMinutes: number;
+  basePrice: number | null; // null = variable, priced per practitioner (pelnoplatna)
+};
+
+export type Practitioner = {
+  id: string;
+  name: string;
+  services: { serviceId: ServiceType; priceOverride: number | null }[];
+};
+
 export type Appointment = {
   id: string;
-  specialistId: string;
-  serviceType: ServiceType;
+  practitionerId: string;
+  serviceId: ServiceType;
+  service: Service;
   startsAt: string; // ISO
   status: AppointmentStatus;
   heldUntil?: string; // ISO, set while status === "held"
-  patientContact: PatientContact;
+  patientId: string;
+  patient: { id: string; name: string; email: string; phone: string };
   price: number; // PLN
   rescheduleCount: number; // 0..MAX_RESCHEDULES
   paymentStatus: "pending" | "paid" | "refund_due" | "refunded";
@@ -36,33 +60,6 @@ export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
-
-// pełnopłatna has no single price — each specialist picks one of these four
-// fixed rates. Everything else is a flat price.
-export const PELNOPLATNA_RATES = [115, 125, 135, 145] as const;
-
-export const PRICE_BY_SERVICE: Record<Exclude<ServiceType, "pelnoplatna">, number> = {
-  niskoplatna: 55,
-  adhd_diagnoza: 350,
-  asystent_zdrowienia: 37,
-  bezplatna: 0,
-};
-
-export const SERVICE_LABELS: Record<ServiceType, { title: string; description: string }> = {
-  niskoplatna: { title: "Konsultacja niskopłatna", description: "Do 10 wizyt na pacjenta" },
-  pelnoplatna: { title: "Konsultacja pełnopłatna", description: "Stawka zależna od specjalisty" },
-  adhd_diagnoza: { title: "Diagnoza ADHD", description: "90 minut" },
-  asystent_zdrowienia: { title: "Asystent zdrowienia", description: "Wsparcie między sesjami" },
-  bezplatna: { title: "Bezpłatna konsultacja", description: "Pierwszy kontakt, bez opłat" },
-};
-
-export function priceLabel(serviceType: ServiceType): string {
-  if (serviceType === "pelnoplatna") {
-    return `${PELNOPLATNA_RATES[0]}–${PELNOPLATNA_RATES[PELNOPLATNA_RATES.length - 1]} zł`;
-  }
-  const price = PRICE_BY_SERVICE[serviceType];
-  return price > 0 ? `${price} zł` : "Bezpłatnie";
-}
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
@@ -78,16 +75,38 @@ function db(): SupabaseClient {
   return _db;
 }
 
+const APPOINTMENT_SELECT = "*, patient:patients(*), service:services(*)";
+
+type ServiceRow = {
+  id: string;
+  title: string;
+  description: string;
+  duration_minutes: number;
+  buffer_minutes: number;
+  base_price: number | null;
+};
+
+function fromServiceRow(r: ServiceRow): Service {
+  return {
+    id: r.id as ServiceType,
+    title: r.title,
+    description: r.description,
+    durationMinutes: r.duration_minutes,
+    bufferMinutes: r.buffer_minutes,
+    basePrice: r.base_price,
+  };
+}
+
 type Row = {
   id: string;
-  specialist_id: string;
-  service_type: ServiceType;
+  practitioner_id: string;
+  service_id: ServiceType;
+  service: ServiceRow;
   starts_at: string;
   status: AppointmentStatus;
   held_until: string | null;
-  patient_name: string;
-  patient_email: string;
-  patient_phone: string;
+  patient_id: string;
+  patient: { id: string; name: string; email: string; phone: string };
   price: number;
   reschedule_count: number;
   payment_status: Appointment["paymentStatus"];
@@ -96,12 +115,14 @@ type Row = {
 function fromRow(r: Row): Appointment {
   return {
     id: r.id,
-    specialistId: r.specialist_id,
-    serviceType: r.service_type,
+    practitionerId: r.practitioner_id,
+    serviceId: r.service_id,
+    service: fromServiceRow(r.service),
     startsAt: r.starts_at,
     status: r.status,
     heldUntil: r.held_until ?? undefined,
-    patientContact: { name: r.patient_name, email: r.patient_email, phone: r.patient_phone },
+    patientId: r.patient_id,
+    patient: r.patient,
     price: r.price,
     rescheduleCount: r.reschedule_count,
     paymentStatus: r.payment_status,
@@ -119,13 +140,42 @@ async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment>
 }
 
 export async function getAppointment(id: string, now = new Date()): Promise<Appointment | undefined> {
-  const { data, error } = await db().from("appointments").select("*").eq("id", id).maybeSingle();
+  const { data, error } = await db().from("appointments").select(APPOINTMENT_SELECT).eq("id", id).maybeSingle();
   if (error) throw error;
   return data ? expireIfStale(fromRow(data as Row), now) : undefined;
 }
 
+// Dedup key is phone — the only identifier guest booking reliably collects.
+// Never overwrite an already-set email on conflict: /konto looks bookings up
+// by email, so silently moving a patient's email to whatever they typed on
+// their latest booking would strand their older bookings under the old one.
+async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
+  const { data: existing, error: lookupError } = await db()
+    .from("patients")
+    .select("id, email")
+    .eq("phone", contact.phone)
+    .maybeSingle();
+  if (lookupError) throw lookupError;
+
+  if (existing) {
+    const patch: { name: string; email?: string } = { name: contact.name };
+    if (!existing.email && contact.email) patch.email = contact.email;
+    const { data, error } = await db().from("patients").update(patch).eq("id", existing.id).select("id").single();
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await db()
+    .from("patients")
+    .insert({ name: contact.name, email: contact.email || null, phone: contact.phone })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function holdSlot(input: {
-  specialistId: string;
+  practitionerId: string;
   serviceType: ServiceType;
   startsAt: string;
   patientContact: PatientContact;
@@ -138,28 +188,32 @@ export async function holdSlot(input: {
   await db()
     .from("appointments")
     .update({ status: "cancelled" })
-    .eq("specialist_id", input.specialistId)
+    .eq("practitioner_id", input.practitionerId)
     .eq("starts_at", input.startsAt)
     .eq("status", "held")
     .lt("held_until", now.toISOString());
 
   const heldUntil = new Date(now.getTime() + HOLD_MINUTES * 60_000).toISOString();
-  const specialists = await getSpecialists();
+  const [practitioners, service, patient] = await Promise.all([
+    getPractitioners(),
+    getService(input.serviceType),
+    upsertPatientByPhone(input.patientContact),
+  ]);
+  if (!service) throw new Error("unknown service");
+
   const { data, error } = await db()
     .from("appointments")
     .insert({
-      specialist_id: input.specialistId,
-      service_type: input.serviceType,
+      practitioner_id: input.practitionerId,
+      service_id: input.serviceType,
       starts_at: input.startsAt,
       status: "held",
       held_until: heldUntil,
-      patient_name: input.patientContact.name,
-      patient_email: input.patientContact.email,
-      patient_phone: input.patientContact.phone,
-      price: priceFor(input.serviceType, input.specialistId, specialists),
+      patient_id: patient.id,
+      price: priceFor(input.serviceType, input.practitionerId, practitioners, service),
       payment_status: "pending",
     })
-    .select()
+    .select(APPOINTMENT_SELECT)
     .single();
   if (error) {
     if (error.code === "23505") throw new Error("ten termin został już zarezerwowany — wybierz inny");
@@ -176,7 +230,7 @@ export async function confirmPayment(id: string, now = new Date()): Promise<Appo
     .from("appointments")
     .update({ status: "confirmed", payment_status: "paid" })
     .eq("id", id)
-    .select()
+    .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
   return fromRow(data as Row);
@@ -211,7 +265,7 @@ export async function cancelAppointment(id: string, now = new Date()): Promise<A
     .from("appointments")
     .update({ status: "cancelled", payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus })
     .eq("id", id)
-    .select()
+    .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
   return fromRow(data as Row);
@@ -227,145 +281,308 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
     .from("appointments")
     .update({ starts_at: newStartsAt, reschedule_count: appt.rescheduleCount + 1 })
     .eq("id", id)
-    .select()
+    .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
   return fromRow(data as Row);
 }
 
-// A specialist's own visit list — same service-role db(), just filtered and
-// ordered instead of open-ended, since a doctor only ever needs their own.
-export async function getAppointmentsForSpecialist(
-  specialistId: string,
+// A practitioner's own visit list — same service-role db(), just filtered
+// and ordered instead of open-ended, since a doctor only ever needs their own.
+export async function getAppointmentsForPractitioner(
+  practitionerId: string,
   now = new Date()
 ): Promise<Appointment[]> {
   const { data, error } = await db()
     .from("appointments")
-    .select("*")
-    .eq("specialist_id", specialistId)
+    .select(APPOINTMENT_SELECT)
+    .eq("practitioner_id", practitionerId)
     .neq("status", "cancelled")
     .order("starts_at", { ascending: true });
   if (error) throw error;
   return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
 }
 
+// Optional patient account (/konto) — matched by email via Supabase Auth
+// magic link, separate from the phone-keyed identity booking uses. A patient
+// row's email can be unset (phone-only guest), so this can legitimately
+// match zero patients.
 export async function getAppointmentsForPatientEmail(
   email: string,
   now = new Date()
 ): Promise<Appointment[]> {
+  const { data: patients, error: patientsError } = await db().from("patients").select("id").eq("email", email);
+  if (patientsError) throw patientsError;
+  const patientIds = (patients ?? []).map((p) => p.id);
+  if (patientIds.length === 0) return [];
+
   const { data, error } = await db()
     .from("appointments")
-    .select("*")
-    .eq("patient_email", email)
+    .select(APPOINTMENT_SELECT)
+    .in("patient_id", patientIds)
     .neq("status", "cancelled")
     .order("starts_at", { ascending: true });
   if (error) throw error;
   return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
 }
 
-// --- Demo slot search --------------------------------------------------
+// --- Service catalog -----------------------------------------------------
 
-export type Specialist = {
+export async function getServices(): Promise<Service[]> {
+  const { data, error } = await db().from("services").select("*").order("id");
+  if (error) throw error;
+  return ((data ?? []) as ServiceRow[]).map(fromServiceRow);
+}
+
+export async function getService(id: string): Promise<Service | undefined> {
+  const { data, error } = await db().from("services").select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data ? fromServiceRow(data as ServiceRow) : undefined;
+}
+
+// Landing page needs a display price per service: a fixed price, "Bezpłatnie"
+// for zero, or a min–max range across practitioners for variable pricing
+// (pelnoplatna) — computed from real practitioner_services rows instead of
+// the old hardcoded PELNOPLATNA_RATES tuple.
+export async function listServicesWithPricing(): Promise<{ service: Service; priceLabel: string }[]> {
+  const [services, practitioners] = await Promise.all([getServices(), getPractitioners()]);
+  return services.map((service) => {
+    if (service.basePrice !== null) {
+      return { service, priceLabel: service.basePrice > 0 ? `${service.basePrice} zł` : "Bezpłatnie" };
+    }
+    const overrides = practitioners
+      .flatMap((p) => p.services)
+      .filter((s) => s.serviceId === service.id && s.priceOverride != null)
+      .map((s) => s.priceOverride!);
+    if (overrides.length === 0) return { service, priceLabel: "Cena zależna od specjalisty" };
+    const min = Math.min(...overrides);
+    const max = Math.max(...overrides);
+    return { service, priceLabel: min === max ? `${min} zł` : `${min}–${max} zł` };
+  });
+}
+
+// --- Practitioners ---------------------------------------------------------
+
+type PractitionerRow = {
   id: string;
   name: string;
-  services: ServiceType[];
-  pelnoplatnaRate: number | null;
+  practitioner_services: { service_id: ServiceType; price_override: number | null }[];
 };
 
-type SpecialistRow = { id: string; name: string; services: ServiceType[]; pelnoplatna_rate: number | null };
-
-export async function getSpecialists(): Promise<Specialist[]> {
-  const { data, error } = await db().from("specialists").select("*");
+export async function getPractitioners(): Promise<Practitioner[]> {
+  const { data, error } = await db().from("practitioners").select("id, name, practitioner_services(service_id, price_override)");
   if (error) throw error;
-  return ((data ?? []) as SpecialistRow[]).map((r) => ({
+  return ((data ?? []) as PractitionerRow[]).map((r) => ({
     id: r.id,
     name: r.name,
-    services: r.services,
-    pelnoplatnaRate: r.pelnoplatna_rate,
+    services: (r.practitioner_services ?? []).map((ps) => ({ serviceId: ps.service_id, priceOverride: ps.price_override })),
   }));
 }
 
-function priceFor(serviceType: ServiceType, specialistId: string, specialists: Specialist[]): number {
-  if (serviceType === "pelnoplatna") {
-    return specialists.find((s) => s.id === specialistId)?.pelnoplatnaRate ?? PELNOPLATNA_RATES[0];
+function priceFor(serviceId: ServiceType, practitionerId: string, practitioners: Practitioner[], service: Service): number {
+  const override = practitioners
+    .find((p) => p.id === practitionerId)
+    ?.services.find((s) => s.serviceId === serviceId)?.priceOverride;
+  return override ?? service.basePrice ?? 0;
+}
+
+// --- Calendars & availability ---------------------------------------------
+
+const MAX_SLOT_DAYS_AHEAD = 7; // practitioners publish availability at most a week out
+
+type AvailabilityRow = { service_id: ServiceType | null; day_of_week: number; start_time: string; end_time: string };
+type ExceptionRow = {
+  service_id: ServiceType | null;
+  date: string;
+  kind: "closed" | "open";
+  start_time: string | null;
+  end_time: string | null;
+};
+
+type CalendarInfo = {
+  timezone: string;
+  availability: AvailabilityRow[];
+  exceptions: ExceptionRow[];
+};
+
+async function getCalendars(): Promise<Map<string, CalendarInfo>> {
+  const { data, error } = await db()
+    .from("calendars")
+    .select(
+      "practitioner_id, timezone, calendar_availability(service_id, day_of_week, start_time, end_time), calendar_exceptions(service_id, date, kind, start_time, end_time)"
+    );
+  if (error) throw error;
+  const map = new Map<string, CalendarInfo>();
+  for (const row of (data ?? []) as {
+    practitioner_id: string;
+    timezone: string;
+    calendar_availability: AvailabilityRow[];
+    calendar_exceptions: ExceptionRow[];
+  }[]) {
+    map.set(row.practitioner_id, {
+      timezone: row.timezone,
+      availability: row.calendar_availability ?? [],
+      exceptions: row.calendar_exceptions ?? [],
+    });
   }
-  return PRICE_BY_SERVICE[serviceType];
+  return map;
 }
 
-const REGULAR_SLOT_MINUTES = 50;
-const ADHD_SLOT_MINUTES = 90;
-const SLOT_BUFFER_MINUTES = 10;
-const MAX_SLOT_DAYS_AHEAD = 7; // specialists publish availability at most a week out
-const WORK_START_HOUR = 9;
-const WORK_END_HOUR = 17;
-
-export type Slot = { specialistId: string; specialistName: string; serviceType: ServiceType; startsAt: string; price: number };
-
-function sessionMinutes(serviceType: ServiceType): number {
-  return serviceType === "adhd_diagnoza" ? ADHD_SLOT_MINUTES : REGULAR_SLOT_MINUTES;
+// Converts a wall-clock time in a given IANA timezone to the correct UTC
+// instant, using the timezone's actual offset for that specific date (so DST
+// is handled correctly) instead of assuming the server runs in that zone —
+// the previous implementation used server-local Date methods, which was only
+// correct if the server happened to run in Europe/Warsaw.
+function wallTimeToUtc(dateStr: string, timeStr: string, timeZone: string): Date {
+  const asUTC = new Date(`${dateStr}T${timeStr}Z`);
+  const inTz = new Date(asUTC.toLocaleString("en-US", { timeZone }));
+  return new Date(asUTC.getTime() + (asUTC.getTime() - inTz.getTime()));
 }
 
-// Slots are duration + buffer apart (50min sessions, 90min ADHD, 10min buffer
-// between), starting at least MIN_LEAD_HOURS from now — matches the real
-// scheduling constraints, not just an arbitrary hourly grid.
-//
-// A specialist has one calendar across all service types: booked time ranges
-// (not just exact start-time matches) block slots for every service, so an
-// ADHD visit (90min) can't be double-booked by a 50min niskoplatna slot that
-// starts partway through it.
+function ymdInTimeZone(date: Date, timeZone: string): string {
+  return date.toLocaleDateString("en-CA", { timeZone }); // en-CA formats as YYYY-MM-DD
+}
+
+type Interval = { start: number; end: number }; // epoch ms
+
+function mergeIntervals(intervals: Interval[]): Interval[] {
+  const sorted = [...intervals].sort((a, b) => a.start - b.start);
+  const merged: Interval[] = [];
+  for (const iv of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && iv.start <= last.end) last.end = Math.max(last.end, iv.end);
+    else merged.push({ ...iv });
+  }
+  return merged;
+}
+
+function candidateStarts(window: Interval, stepMinutes: number, durationMinutes: number): number[] {
+  const starts: number[] = [];
+  let cursor = window.start;
+  while (cursor + durationMinutes * 60_000 <= window.end) {
+    starts.push(cursor);
+    cursor += stepMinutes * 60_000;
+  }
+  return starts;
+}
+
+// One day's bookable start times for one practitioner + service. A "closed"
+// exception removes whichever candidates it overlaps from the base grid — it
+// does NOT shrink/reflow the base window, so 09:00/10:00/11:00... stays on
+// the hour even if 10:00 gets blocked, rather than the afternoon sliding to
+// match a shortened window. An "open" exception is its own independent
+// window with its own cursor, since it's explicitly outside the normal hours.
+function slotStartsForDay(
+  calendar: CalendarInfo,
+  serviceType: ServiceType,
+  dateStr: string,
+  weekday: number,
+  stepMinutes: number,
+  durationMinutes: number
+): number[] {
+  const forThisService = (id: ServiceType | null) => id === null || id === serviceType;
+
+  const baseWindows = mergeIntervals(
+    calendar.availability
+      .filter((a) => a.day_of_week === weekday && forThisService(a.service_id))
+      .map((a) => ({
+        start: wallTimeToUtc(dateStr, a.start_time, calendar.timezone).getTime(),
+        end: wallTimeToUtc(dateStr, a.end_time, calendar.timezone).getTime(),
+      }))
+  );
+
+  const dayExceptions = calendar.exceptions.filter((e) => e.date === dateStr && forThisService(e.service_id));
+
+  let starts = baseWindows.flatMap((w) => candidateStarts(w, stepMinutes, durationMinutes));
+
+  const closedRanges = dayExceptions
+    .filter((e) => e.kind === "closed")
+    .map((e) =>
+      e.start_time && e.end_time
+        ? {
+            start: wallTimeToUtc(dateStr, e.start_time, calendar.timezone).getTime(),
+            end: wallTimeToUtc(dateStr, e.end_time, calendar.timezone).getTime(),
+          }
+        : { start: -Infinity, end: Infinity } // both null = whole day off
+    );
+  if (closedRanges.length > 0) {
+    starts = starts.filter((start) => {
+      const end = start + durationMinutes * 60_000;
+      return !closedRanges.some((r) => r.start < end && start < r.end);
+    });
+  }
+
+  const openWindows = dayExceptions
+    .filter((e) => e.kind === "open" && e.start_time && e.end_time)
+    .map((e) => ({
+      start: wallTimeToUtc(dateStr, e.start_time!, calendar.timezone).getTime(),
+      end: wallTimeToUtc(dateStr, e.end_time!, calendar.timezone).getTime(),
+    }));
+  for (const w of openWindows) starts.push(...candidateStarts(w, stepMinutes, durationMinutes));
+
+  return [...new Set(starts)].sort((a, b) => a - b);
+}
+
+export type Slot = {
+  practitionerId: string;
+  practitionerName: string;
+  serviceId: ServiceType;
+  startsAt: string;
+  price: number;
+};
+
+// A practitioner has one calendar across all service types: booked time
+// ranges (not just exact start-time matches) block slots for every service,
+// so an ADHD visit (90min) can't be double-booked by a 50min niskoplatna
+// slot that starts partway through it.
 export async function listAvailableSlots(serviceType: ServiceType, now = new Date()): Promise<Slot[]> {
-  const [{ data, error }, allSpecialists] = await Promise.all([
-    db()
-      .from("appointments")
-      .select("specialist_id, starts_at, service_type, status, held_until")
-      .neq("status", "cancelled"),
-    getSpecialists(),
+  const [{ data, error }, practitioners, calendars, services] = await Promise.all([
+    db().from("appointments").select("practitioner_id, starts_at, service_id, status, held_until").neq("status", "cancelled"),
+    getPractitioners(),
+    getCalendars(),
+    getServices(),
   ]);
   if (error) throw error;
+
+  const serviceById = new Map(services.map((s) => [s.id, s]));
+  const service = serviceById.get(serviceType);
+  if (!service) return [];
 
   const busy = (data ?? [])
     .filter((a) => !(a.status === "held" && a.held_until && new Date(a.held_until) <= now))
     .map((a) => {
       const start = new Date(a.starts_at).getTime();
-      return {
-        specialistId: a.specialist_id as string,
-        start,
-        end: start + sessionMinutes(a.service_type as ServiceType) * 60_000,
-      };
+      const durationMinutes = serviceById.get(a.service_id as ServiceType)?.durationMinutes ?? 0;
+      return { practitionerId: a.practitioner_id as string, start, end: start + durationMinutes * 60_000 };
     });
 
   const slots: Slot[] = [];
-  const specialists = allSpecialists.filter((s) => s.services.includes(serviceType));
-  const durationMinutes = serviceType === "adhd_diagnoza" ? ADHD_SLOT_MINUTES : REGULAR_SLOT_MINUTES;
-  const minStart = new Date(now.getTime() + MIN_LEAD_HOURS * 3_600_000);
+  const eligible = practitioners.filter((p) => p.services.some((s) => s.serviceId === serviceType));
+  const stepMinutes = service.durationMinutes + service.bufferMinutes;
+  const minStart = new Date(now.getTime() + MIN_LEAD_HOURS * 3_600_000).getTime();
 
-  for (let dayOffset = 0; dayOffset <= MAX_SLOT_DAYS_AHEAD; dayOffset++) {
-    const day = new Date(now);
-    day.setDate(day.getDate() + dayOffset);
-    const dayEnd = new Date(day);
-    dayEnd.setHours(WORK_END_HOUR, 0, 0, 0);
+  for (const practitioner of eligible) {
+    const calendar = calendars.get(practitioner.id);
+    if (!calendar) continue;
 
-    for (const spec of specialists) {
-      const cursor = new Date(day);
-      cursor.setHours(WORK_START_HOUR, 0, 0, 0);
-      while (cursor.getTime() + durationMinutes * 60_000 <= dayEnd.getTime()) {
-        if (cursor >= minStart) {
-          const candidateStart = cursor.getTime();
-          const candidateEnd = candidateStart + durationMinutes * 60_000;
-          const overlaps = busy.some(
-            (b) => b.specialistId === spec.id && b.start < candidateEnd && candidateStart < b.end
-          );
-          if (!overlaps) {
-            slots.push({
-              specialistId: spec.id,
-              specialistName: spec.name,
-              serviceType,
-              startsAt: cursor.toISOString(),
-              price: priceFor(serviceType, spec.id, allSpecialists),
-            });
-          }
+    for (let dayOffset = 0; dayOffset <= MAX_SLOT_DAYS_AHEAD; dayOffset++) {
+      const dateStr = ymdInTimeZone(new Date(now.getTime() + dayOffset * 86_400_000), calendar.timezone);
+      const weekday = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+      const starts = slotStartsForDay(calendar, serviceType, dateStr, weekday, stepMinutes, service.durationMinutes);
+
+      for (const start of starts) {
+        if (start < minStart) continue;
+        const end = start + service.durationMinutes * 60_000;
+        const overlaps = busy.some((b) => b.practitionerId === practitioner.id && b.start < end && start < b.end);
+        if (!overlaps) {
+          slots.push({
+            practitionerId: practitioner.id,
+            practitionerName: practitioner.name,
+            serviceId: serviceType,
+            startsAt: new Date(start).toISOString(),
+            price: priceFor(serviceType, practitioner.id, practitioners, service),
+          });
         }
-        cursor.setMinutes(cursor.getMinutes() + durationMinutes + SLOT_BUFFER_MINUTES);
       }
     }
   }

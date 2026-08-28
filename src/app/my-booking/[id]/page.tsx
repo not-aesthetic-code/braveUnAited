@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { canManage, confirmPayment, getAppointment, listAvailableSlots, SERVICE_LABELS } from "@/lib/appointments";
+import { canManage, confirmPayment, getAppointment, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
 
@@ -52,7 +52,7 @@ export default async function ManageBookingPage({
 
   const { canCancel, canReschedule } = canManage(appt);
   const rescheduleOptions = canReschedule
-    ? (await listAvailableSlots(appt.serviceType)).filter((s) => s.specialistId === appt.specialistId)
+    ? (await listAvailableSlots(appt.serviceId)).filter((s) => s.practitionerId === appt.practitionerId)
     : [];
 
   return (
@@ -63,7 +63,7 @@ export default async function ManageBookingPage({
       </div>
 
       <div className="rounded-xl border bg-card p-5">
-        <p className="font-medium">{SERVICE_LABELS[appt.serviceType].title}</p>
+        <p className="font-medium">{appt.service.title}</p>
         <p className="text-sm text-muted-foreground">
           {new Date(appt.startsAt).toLocaleString("pl-PL", {
             weekday: "long",
