@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useReducer, useState, useTransition } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { confirmPaymentAction, holdSlotAction } from "./actions";
@@ -20,16 +20,17 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
 }
 
+// ponytail: msLeft is computed fresh every render instead of cached in state —
+// caching it meant the first render after a hold starts saw a stale 0 (from
+// before `target` existed) and immediately tripped the expiry check.
 function useCountdown(target: string | undefined) {
-  const [msLeft, setMsLeft] = useState(() => (target ? new Date(target).getTime() - Date.now() : 0));
+  const [, forceTick] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     if (!target) return;
-    const tick = () => setMsLeft(new Date(target).getTime() - Date.now());
-    tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(forceTick, 1000);
     return () => clearInterval(id);
   }, [target]);
-  return Math.max(0, msLeft);
+  return target ? Math.max(0, new Date(target).getTime() - Date.now()) : 0;
 }
 
 type Phase = "browse" | "form" | "held" | "expired" | "confirmed";

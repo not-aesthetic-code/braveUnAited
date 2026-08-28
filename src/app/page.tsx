@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LoginDialog } from "@/components/login-dialog";
 import { priceLabel, SERVICE_LABELS, type ServiceType } from "@/lib/appointments";
 
 const SERVICES = Object.keys(SERVICE_LABELS) as ServiceType[];
@@ -8,7 +9,10 @@ export default function Home() {
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b px-6 py-4">
         <span className="font-semibold tracking-tight">Fundacja Niepodzielni</span>
-        <span className="text-sm text-muted-foreground">Pomoc psychologiczna</span>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-muted-foreground">Pomoc psychologiczna</span>
+          <LoginDialog />
+        </div>
       </header>
 
       <main className="flex flex-1 flex-col items-center gap-10 px-6 py-16 text-center">
