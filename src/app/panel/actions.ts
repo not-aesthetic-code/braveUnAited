@@ -2,7 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getAppointment, getPatientsToRemind, markAttendance, sendVisitReminderEmail, type AppointmentStatus } from "@/lib/appointments";
+import {
+  cancelAppointmentAsPractitioner,
+  getAppointment,
+  getPatientsToRemind,
+  markAttendance,
+  rescheduleAppointmentAsPractitioner,
+  sendVisitReminderEmail,
+  type AppointmentStatus,
+} from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 
 export async function logoutAction() {
@@ -11,6 +19,8 @@ export async function logoutAction() {
   redirect("/panel/login");
 }
 
+// Same auth-metadata key panel/page.tsx reads — see the comment there for
+// why it's still `specialist_id` after the DB rename to `practitioners`.
 async function requirePractitionerId(): Promise<string> {
   const supabase = await createClient();
   const { data } = await supabase.auth.getClaims();
@@ -29,6 +39,20 @@ export async function markAttendanceAction(id: string, outcome: Extract<Appointm
   const appt = await getAppointment(id);
   if (!appt || appt.practitionerId !== practitionerId) throw new Error("not your appointment");
   await markAttendance(id, outcome);
+  revalidatePath("/panel");
+}
+
+export async function cancelPractitionerBookingAction(id: string, _formData: FormData) {
+  const practitionerId = await requirePractitionerId();
+  await cancelAppointmentAsPractitioner(id, practitionerId);
+  revalidatePath("/panel");
+}
+
+export async function reschedulePractitionerBookingAction(id: string, formData: FormData) {
+  const newStartsAt = formData.get("newStartsAt");
+  if (typeof newStartsAt !== "string" || !newStartsAt) return;
+  const practitionerId = await requirePractitionerId();
+  await rescheduleAppointmentAsPractitioner(id, practitionerId, newStartsAt);
   revalidatePath("/panel");
 }
 

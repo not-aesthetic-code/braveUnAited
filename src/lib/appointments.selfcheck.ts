@@ -12,6 +12,8 @@ import {
   confirmPayment,
   cancelAppointment,
   rescheduleAppointment,
+  cancelAppointmentAsPractitioner,
+  rescheduleAppointmentAsPractitioner,
   canManage,
   listAvailableSlots,
   getAppointment,
@@ -204,6 +206,21 @@ async function main() {
       () => sendVisitReminderEmail(noEmailAppt.patientId, now),
       "a patient with no email on file shouldn't be emailable"
     );
+  }
+
+  // Practitioner-side cancel/reschedule: no 24h/reschedule-cap guardrails
+  // (those are patient self-service limits), but ownership is enforced.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-01T20:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+    assert.equal(canManage(appt, now).canCancel, false); // <24h — would reject the patient-side call
+
+    await assert.rejects(() => cancelAppointmentAsPractitioner(appt.id, "someone-elses-id", now));
+    const moved = await rescheduleAppointmentAsPractitioner(appt.id, "spec-1", "2026-09-01T21:00:00Z", now);
+    assert.equal(moved.startsAt, "2026-09-01T21:00:00Z");
+    const cancelled = await cancelAppointmentAsPractitioner(moved.id, "spec-1", now);
+    assert.equal(cancelled.status, "cancelled");
   }
 
   console.log("appointments.ts self-check passed");

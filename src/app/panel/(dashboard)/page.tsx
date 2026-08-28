@@ -1,8 +1,21 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { getAppointmentsForPractitioner, getPatientsToRemind, isPastAppointment, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
+import {
+  getAppointmentsForPractitioner,
+  getPatientsToRemind,
+  isPastAppointment,
+  listAvailableSlots,
+  REMINDER_AFTER_WEEKS,
+  type ServiceType,
+  type Slot,
+} from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
-import { markAttendanceAction, sendReminderEmailAction } from "../actions";
+import {
+  cancelPractitionerBookingAction,
+  markAttendanceAction,
+  reschedulePractitionerBookingAction,
+  sendReminderEmailAction,
+} from "../actions";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -20,6 +33,19 @@ export default async function DoctorPanelPage() {
     getAppointmentsForPractitioner(practitionerId),
     getPatientsToRemind(practitionerId),
   ]);
+
+  // Same practitioner for every row on this page, so fetch reschedule slots
+  // once per distinct service instead of once per confirmed appointment.
+  const confirmedServiceIds = [...new Set(
+    appointments.filter((a) => a.status === "confirmed").map((a) => a.serviceId)
+  )];
+  const slotsByService = new Map<ServiceType, Slot[]>();
+  await Promise.all(
+    confirmedServiceIds.map(async (serviceId) => {
+      const slots = await listAvailableSlots(serviceId);
+      slotsByService.set(serviceId, slots.filter((s) => s.practitionerId === practitionerId));
+    })
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -90,6 +116,34 @@ export default async function DoctorPanelPage() {
               <span>Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span></span>
               <span>Pacjent: <span className="font-medium">{appt.patient.name}</span></span>
             </div>
+            {appt.status === "confirmed" && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <form
+                  action={reschedulePractitionerBookingAction.bind(null, appt.id)}
+                  className="flex items-center gap-2"
+                >
+                  <select name="newStartsAt" required className="rounded-md border bg-background px-2 py-1 text-sm">
+                    <option value="">Przełóż na…</option>
+                    {(slotsByService.get(appt.serviceId) ?? []).map((s) => (
+                      <option key={s.startsAt} value={s.startsAt}>
+                        {new Date(s.startsAt).toLocaleString("pl-PL", {
+                          weekday: "short",
+                          day: "numeric",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </option>
+                    ))}
+                  </select>
+                  <Button type="submit" variant="outline" size="sm">Przełóż</Button>
+                </form>
+                <form action={cancelPractitionerBookingAction.bind(null, appt.id)}>
+                  <Button type="submit" variant="destructive" size="sm">Odwołaj</Button>
+                </form>
+              </div>
+            )}
+
             {appt.status === "confirmed" && isPastAppointment(appt) && (
               <div className="mt-3 flex gap-2">
                 <form action={markAttendanceAction.bind(null, appt.id, "completed")}>

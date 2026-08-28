@@ -313,14 +313,7 @@ export function canManage(appt: Appointment, now = new Date()) {
   };
 }
 
-// Rules are enforced here, not just hidden in the UI — this is the trust
-// boundary, a patient could otherwise hit the endpoint directly.
-export async function cancelAppointment(id: string, now = new Date()): Promise<Appointment> {
-  const appt = await getAppointment(id, now);
-  if (!appt) throw new Error("appointment not found");
-  if (!canManage(appt, now).canCancel) {
-    throw new Error("cancellation window has passed — contact the specialist directly");
-  }
+async function applyCancel(id: string, appt: Appointment): Promise<Appointment> {
   const { data, error } = await db()
     .from("appointments")
     .update({ status: "cancelled", payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus })
@@ -331,12 +324,7 @@ export async function cancelAppointment(id: string, now = new Date()): Promise<A
   return fromRow(data as Row);
 }
 
-export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
-  const appt = await getAppointment(id, now);
-  if (!appt) throw new Error("appointment not found");
-  if (!canManage(appt, now).canReschedule) {
-    throw new Error("reschedule window has passed or limit reached");
-  }
+async function applyReschedule(id: string, appt: Appointment, newStartsAt: string): Promise<Appointment> {
   const { data, error } = await db()
     .from("appointments")
     .update({ starts_at: newStartsAt, reschedule_count: appt.rescheduleCount + 1 })
@@ -345,6 +333,56 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
     .single();
   if (error) throw error;
   return fromRow(data as Row);
+}
+
+// Rules are enforced here, not just hidden in the UI — this is the trust
+// boundary, a patient could otherwise hit the endpoint directly.
+export async function cancelAppointment(id: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (!canManage(appt, now).canCancel) {
+    throw new Error("cancellation window has passed — contact the specialist directly");
+  }
+  return applyCancel(id, appt);
+}
+
+export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (!canManage(appt, now).canReschedule) {
+    throw new Error("reschedule window has passed or limit reached");
+  }
+  return applyReschedule(id, appt, newStartsAt);
+}
+
+// Practitioner side: a doctor can cancel or move their own confirmed visits
+// any time — the 24h window and reschedule cap in canManage() are patient
+// self-service guardrails, not limits on the specialist who owns the slot.
+// Ownership is checked here (not just in the UI) since this is the trust
+// boundary a logged-in practitioner's request crosses.
+export async function cancelAppointmentAsPractitioner(
+  id: string,
+  practitionerId: string,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be cancelled");
+  return applyCancel(id, appt);
+}
+
+export async function rescheduleAppointmentAsPractitioner(
+  id: string,
+  practitionerId: string,
+  newStartsAt: string,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be rescheduled");
+  return applyReschedule(id, appt, newStartsAt);
 }
 
 // Explicit outcome for a past session — the counterpart to the automatic
