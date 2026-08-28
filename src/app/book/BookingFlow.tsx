@@ -44,7 +44,7 @@ export function BookingFlow({
   const [pending, startTransition] = useTransition();
 
   const [name, setName] = useState("");
-  const [phone, setPhone] = useState("+48 ");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   // Empty is fine — email is optional — but a non-empty value must look real.
   const emailInvalid = email !== "" && !isValidEmail(email);
