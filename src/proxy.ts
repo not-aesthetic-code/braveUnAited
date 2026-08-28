@@ -5,7 +5,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const GUARDED_BASES = ["/konto"];
+const GUARDED_BASES = ["/panel", "/konto"];
 
 export default async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -48,5 +48,5 @@ export default async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/konto/:path*"],
+  matcher: ["/panel/:path*", "/konto/:path*"],
 };

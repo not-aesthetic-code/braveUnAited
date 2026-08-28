@@ -177,14 +177,14 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               type="button"
               aria-label="Poprzedni miesiąc"
               onClick={() => setViewMonth((m) => addMonths(m, -1))}
-              className="rounded-md border px-2 py-1 text-sm hover:bg-muted"
+              className="rounded-md border px-2 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
             >
               ‹
             </button>
             <button
               type="button"
               onClick={() => setViewMonth(startOfMonth(new Date()))}
-              className="rounded-md border px-3 py-1 text-sm hover:bg-muted"
+              className="rounded-md border px-3 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
             >
               Dziś
             </button>
@@ -192,7 +192,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               type="button"
               aria-label="Następny miesiąc"
               onClick={() => setViewMonth((m) => addMonths(m, 1))}
-              className="rounded-md border px-2 py-1 text-sm hover:bg-muted"
+              className="rounded-md border px-2 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
             >
               ›
             </button>
@@ -226,7 +226,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
                   reset();
                 }}
                 className={`flex min-h-[84px] flex-col items-start gap-1 p-2 text-left transition-colors ${
-                  hasSlots ? "cursor-pointer hover:bg-muted" : "cursor-default"
+                  hasSlots ? "cursor-pointer hover:bg-secondary" : "cursor-default"
                 } ${isSelected ? "bg-primary/10" : ""}`}
               >
                 <span
@@ -287,7 +287,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
             <button
               key={`${slot.practitionerId}|${slot.startsAt}`}
               onClick={() => pickSlot(slot)}
-              className="flex flex-col rounded-lg border bg-card px-3 py-2 text-sm hover:bg-muted"
+              className="flex flex-col rounded-lg border bg-card px-3 py-2 text-sm transition-colors hover:border-secondary-foreground hover:bg-secondary hover:text-secondary-foreground"
             >
               <span className="font-medium">{formatTime(slot.startsAt)}</span>
               {selectedSpecialist === "all" && (
