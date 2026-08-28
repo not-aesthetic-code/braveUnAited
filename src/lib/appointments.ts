@@ -144,6 +144,7 @@ export async function holdSlot(input: {
     .lt("held_until", now.toISOString());
 
   const heldUntil = new Date(now.getTime() + HOLD_MINUTES * 60_000).toISOString();
+  const specialists = await getSpecialists();
   const { data, error } = await db()
     .from("appointments")
     .insert({
@@ -155,7 +156,7 @@ export async function holdSlot(input: {
       patient_name: input.patientContact.name,
       patient_email: input.patientContact.email,
       patient_phone: input.patientContact.phone,
-      price: priceFor(input.serviceType, input.specialistId),
+      price: priceFor(input.serviceType, input.specialistId, specialists),
       payment_status: "pending",
     })
     .select()
@@ -232,17 +233,47 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
   return fromRow(data as Row);
 }
 
+// A specialist's own visit list — same service-role db(), just filtered and
+// ordered instead of open-ended, since a doctor only ever needs their own.
+export async function getAppointmentsForSpecialist(
+  specialistId: string,
+  now = new Date()
+): Promise<Appointment[]> {
+  const { data, error } = await db()
+    .from("appointments")
+    .select("*")
+    .eq("specialist_id", specialistId)
+    .neq("status", "cancelled")
+    .order("starts_at", { ascending: true });
+  if (error) throw error;
+  return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
+}
+
 // --- Demo slot search --------------------------------------------------
 
-const SPECIALISTS = [
-  { id: "spec-1", name: "Anna Kowalska", services: ["niskoplatna", "pelnoplatna"] as ServiceType[], pelnoplatnaRate: 125 },
-  { id: "spec-2", name: "Marek Nowak", services: ["pelnoplatna", "adhd_diagnoza"] as ServiceType[], pelnoplatnaRate: 145 },
-  { id: "spec-3", name: "Ola Wiśniewska", services: ["asystent_zdrowienia", "bezplatna"] as ServiceType[] },
-];
+export type Specialist = {
+  id: string;
+  name: string;
+  services: ServiceType[];
+  pelnoplatnaRate: number | null;
+};
 
-function priceFor(serviceType: ServiceType, specialistId: string): number {
+type SpecialistRow = { id: string; name: string; services: ServiceType[]; pelnoplatna_rate: number | null };
+
+export async function getSpecialists(): Promise<Specialist[]> {
+  const { data, error } = await db().from("specialists").select("*");
+  if (error) throw error;
+  return ((data ?? []) as SpecialistRow[]).map((r) => ({
+    id: r.id,
+    name: r.name,
+    services: r.services,
+    pelnoplatnaRate: r.pelnoplatna_rate,
+  }));
+}
+
+function priceFor(serviceType: ServiceType, specialistId: string, specialists: Specialist[]): number {
   if (serviceType === "pelnoplatna") {
-    return SPECIALISTS.find((s) => s.id === specialistId)?.pelnoplatnaRate ?? PELNOPLATNA_RATES[0];
+    return specialists.find((s) => s.id === specialistId)?.pelnoplatnaRate ?? PELNOPLATNA_RATES[0];
   }
   return PRICE_BY_SERVICE[serviceType];
 }
@@ -269,10 +300,13 @@ function sessionMinutes(serviceType: ServiceType): number {
 // ADHD visit (90min) can't be double-booked by a 50min niskoplatna slot that
 // starts partway through it.
 export async function listAvailableSlots(serviceType: ServiceType, now = new Date()): Promise<Slot[]> {
-  const { data, error } = await db()
-    .from("appointments")
-    .select("specialist_id, starts_at, service_type, status, held_until")
-    .neq("status", "cancelled");
+  const [{ data, error }, allSpecialists] = await Promise.all([
+    db()
+      .from("appointments")
+      .select("specialist_id, starts_at, service_type, status, held_until")
+      .neq("status", "cancelled"),
+    getSpecialists(),
+  ]);
   if (error) throw error;
 
   const busy = (data ?? [])
@@ -287,7 +321,7 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
     });
 
   const slots: Slot[] = [];
-  const specialists = SPECIALISTS.filter((s) => s.services.includes(serviceType));
+  const specialists = allSpecialists.filter((s) => s.services.includes(serviceType));
   const durationMinutes = serviceType === "adhd_diagnoza" ? ADHD_SLOT_MINUTES : REGULAR_SLOT_MINUTES;
   const minStart = new Date(now.getTime() + MIN_LEAD_HOURS * 3_600_000);
 
@@ -313,7 +347,7 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
               specialistName: spec.name,
               serviceType,
               startsAt: cursor.toISOString(),
-              price: priceFor(serviceType, spec.id),
+              price: priceFor(serviceType, spec.id, allSpecialists),
             });
           }
         }
