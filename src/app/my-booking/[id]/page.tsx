@@ -46,7 +46,7 @@ export default async function ManageBookingPage({
   // — reconcile from the redirect itself too, so a payment doesn't look
   // "unpaid" forever just because the listener wasn't up at the time.
   if (appt?.status === "held" && checkout === "success" && sessionId) {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const session = await stripe().checkout.sessions.retrieve(sessionId);
     if (session.payment_status !== "unpaid") {
       appt = await confirmPayment(id).catch(() => appt);
     }
