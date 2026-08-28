@@ -67,6 +67,7 @@ export const MIN_LEAD_HOURS = 2;
 export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { sendEmail } from "./email";
 import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
 
@@ -391,13 +392,16 @@ export const REMINDER_AFTER_WEEKS = 6;
 export type ReminderCandidate = {
   patient: { id: string; name: string; email: string; phone: string };
   lastVisitAt: string; // ISO — most recent confirmed appointment in the past
+  lastReminderSentAt: string | null; // ISO — see sendVisitReminderEmail()
 };
 
 // Patients a practitioner should reach out to: their most recent confirmed
 // appointment was REMINDER_AFTER_WEEKS+ ago, and they have nothing booked
-// since. Outreach itself is manual (call/SMS) — same "stub the delivery,
-// build the real logic" pattern as confirmPayment() before Stripe landed —
-// this just surfaces who to call.
+// since. Applies across every service type — nothing here is ADHD-specific,
+// unlike the immediate booking-confirmation SMS in confirmPayment(), which
+// is a different feature entirely. Outreach is specialist-triggered (see
+// sendVisitReminderEmail(), wired to a button in /panel) rather than
+// automatic, so a patient isn't re-emailed on every /panel page load.
 //
 // Includes both "confirmed" (future, or past but still inside the
 // ATTENDANCE_GRACE_HOURS window) and "completed" (settled past visits) —
@@ -416,13 +420,21 @@ export async function getPatientsToRemind(
     .order("starts_at", { ascending: false });
   if (error) throw error;
 
-  const appts = ((data ?? []) as Row[]).map(fromRow);
+  // patients(*) in APPOINTMENT_SELECT already pulls last_reminder_sent_at —
+  // it's just not part of the narrower Row/Appointment "patient" shape used
+  // elsewhere, so it's read off the raw row instead of threaded through
+  // fromRow().
+  type RowWithReminderState = Row & { patient: Row["patient"] & { last_reminder_sent_at: string | null } };
+  const appts = ((data ?? []) as RowWithReminderState[]).map((r) => ({
+    ...fromRow(r),
+    lastReminderSentAt: r.patient.last_reminder_sent_at,
+  }));
   const nowMs = now.getTime();
   const cutoffMs = nowMs - REMINDER_AFTER_WEEKS * 7 * 86_400_000;
 
   // Rows are ordered newest-first, so the first past appointment seen per
   // patient is their most recent one.
-  const lastPastVisit = new Map<string, Appointment>();
+  const lastPastVisit = new Map<string, (typeof appts)[number]>();
   const hasUpcoming = new Set<string>();
   for (const appt of appts) {
     if (new Date(appt.startsAt).getTime() >= nowMs) {
@@ -436,10 +448,33 @@ export async function getPatientsToRemind(
   for (const [patientId, appt] of lastPastVisit) {
     if (hasUpcoming.has(patientId)) continue;
     if (new Date(appt.startsAt).getTime() <= cutoffMs) {
-      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt });
+      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt, lastReminderSentAt: appt.lastReminderSentAt });
     }
   }
   return candidates.sort((a, b) => a.lastVisitAt.localeCompare(b.lastVisitAt));
+}
+
+// Fires the getPatientsToRemind() outreach as an actual email instead of
+// leaving it as a call-list, and records when it went out so /panel can show
+// "already sent" instead of offering to resend on every reload. A
+// phone-only guest patient has no email to send to — the caller (the
+// specialist, via the panel) still has phone/call as the fallback for them.
+export async function sendVisitReminderEmail(patientId: string, now = new Date()): Promise<void> {
+  const { data: patient, error } = await db().from("patients").select("name, email").eq("id", patientId).single();
+  if (error) throw error;
+  if (!patient.email) throw new Error("patient has no email on file — call instead");
+
+  sendEmail(
+    patient.email,
+    "Zapraszamy na kolejną wizytę",
+    `Cześć ${patient.name}, minęło trochę czasu od Twojej ostatniej wizyty. Jeśli chcesz umówić kolejną, zajrzyj na naszą stronę.`
+  );
+
+  const { error: updateError } = await db()
+    .from("patients")
+    .update({ last_reminder_sent_at: now.toISOString() })
+    .eq("id", patientId);
+  if (updateError) throw updateError;
 }
 
 // Optional patient account (/konto) — matched by email via Supabase Auth

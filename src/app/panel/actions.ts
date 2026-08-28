@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getAppointment, markAttendance, type AppointmentStatus } from "@/lib/appointments";
+import { getAppointment, getPatientsToRemind, markAttendance, sendVisitReminderEmail, type AppointmentStatus } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 
 export async function logoutAction() {
@@ -29,5 +29,16 @@ export async function markAttendanceAction(id: string, outcome: Extract<Appointm
   const appt = await getAppointment(id);
   if (!appt || appt.practitionerId !== practitionerId) throw new Error("not your appointment");
   await markAttendance(id, outcome);
+  revalidatePath("/panel");
+}
+
+// Same trust boundary as markAttendanceAction: re-derive this practitioner's
+// own reminder list rather than trusting the posted patientId outright,
+// otherwise a logged-in doctor could email an arbitrary patient id.
+export async function sendReminderEmailAction(patientId: string) {
+  const practitionerId = await requirePractitionerId();
+  const candidates = await getPatientsToRemind(practitionerId);
+  if (!candidates.some((c) => c.patient.id === patientId)) throw new Error("not a reminder candidate for this practitioner");
+  await sendVisitReminderEmail(patientId);
   revalidatePath("/panel");
 }

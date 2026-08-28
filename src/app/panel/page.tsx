@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { getAppointmentsForPractitioner, getPatientsToRemind, isPastAppointment, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
-import { logoutAction, markAttendanceAction } from "./actions";
+import { logoutAction, markAttendanceAction, sendReminderEmailAction } from "./actions";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -60,6 +60,21 @@ export default async function DoctorPanelPage() {
                   year: "numeric",
                 })}
               </p>
+              <div className="mt-3 flex items-center gap-3">
+                {r.patient.email ? (
+                  <form action={sendReminderEmailAction.bind(null, r.patient.id)}>
+                    <Button type="submit" variant="outline" size="sm">Wyślij przypomnienie e-mailem</Button>
+                  </form>
+                ) : (
+                  <span className="text-sm text-muted-foreground">Brak e-maila — zadzwoń</span>
+                )}
+                {r.lastReminderSentAt && (
+                  <span className="text-xs text-muted-foreground">
+                    Ostatnio wysłano{" "}
+                    {new Date(r.lastReminderSentAt).toLocaleDateString("pl-PL", { day: "numeric", month: "long" })}
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>

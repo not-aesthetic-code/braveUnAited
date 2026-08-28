@@ -17,6 +17,7 @@ import {
   getAppointment,
   markAttendance,
   getPatientsToRemind,
+  sendVisitReminderEmail,
   HOLD_MINUTES,
   MAX_RESCHEDULES,
   ATTENDANCE_GRACE_HOURS,
@@ -28,6 +29,11 @@ import {
 // A placeholder like the old "123" would now be rejected outright.
 const contact = { name: "Test", email: "selfcheck@example.com", phone: "690000001" };
 const contactPhoneStored = "+48690000001";
+
+// A guest who never gave an email — for the "can't email this patient"
+// branch of sendVisitReminderEmail.
+const noEmailContact = { name: "Test NoEmail", email: "", phone: "690000002" };
+const noEmailPhoneStored = "+48690000002";
 
 async function main() {
   // Hold expires after HOLD_MINUTES.
@@ -165,6 +171,41 @@ async function main() {
     );
   }
 
+  // Reminder email: applies to any service type (not just adhd_diagnoza —
+  // that's a different, immediate booking-confirmation SMS), records when it
+  // went out so getPatientsToRemind can report "already sent", and refuses a
+  // patient with no email on file instead of silently doing nothing.
+  {
+    const holdNow = new Date("2025-06-01T00:00:00Z");
+    const held = await holdSlot(
+      { practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2025-06-02T10:00:00Z", patientContact: contact },
+      holdNow
+    );
+    const appt = await confirmPayment(held.id, holdNow);
+
+    const now = new Date("2026-09-01T10:00:00Z"); // months later — well past the 6-week cutoff
+    const before = await getPatientsToRemind("spec-3", now);
+    const candidateBefore = before.find((c) => c.patient.id === appt.patientId);
+    assert.ok(candidateBefore, "should be a reminder candidate");
+    assert.equal(candidateBefore!.lastReminderSentAt, null);
+
+    await sendVisitReminderEmail(appt.patientId, now);
+    const after = await getPatientsToRemind("spec-3", now);
+    const candidateAfter = after.find((c) => c.patient.id === appt.patientId);
+    assert.ok(candidateAfter?.lastReminderSentAt, "lastReminderSentAt should be set after sending");
+    assert.equal(new Date(candidateAfter!.lastReminderSentAt!).getTime(), now.getTime());
+
+    const noEmailHeld = await holdSlot(
+      { practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2025-06-03T10:00:00Z", patientContact: noEmailContact },
+      holdNow
+    );
+    const noEmailAppt = await confirmPayment(noEmailHeld.id, holdNow);
+    await assert.rejects(
+      () => sendVisitReminderEmail(noEmailAppt.patientId, now),
+      "a patient with no email on file shouldn't be emailable"
+    );
+  }
+
   console.log("appointments.ts self-check passed");
 }
 
@@ -174,6 +215,8 @@ main().finally(async () => {
   });
   // patient contact info now lives in `patients`, keyed by phone — delete
   // this run's appointments via that row instead of a patient_email column.
-  const { data: patient } = await db.from("patients").select("id").eq("phone", contactPhoneStored).maybeSingle();
-  if (patient) await db.from("appointments").delete().eq("patient_id", patient.id);
+  for (const phone of [contactPhoneStored, noEmailPhoneStored]) {
+    const { data: patient } = await db.from("patients").select("id").eq("phone", phone).maybeSingle();
+    if (patient) await db.from("appointments").delete().eq("patient_id", patient.id);
+  }
 });
