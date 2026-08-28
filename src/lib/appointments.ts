@@ -61,6 +61,10 @@ export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
+// A specialist has this long after a session ends to explicitly mark
+// completed/no_show before the system defaults it to "completed" — see
+// expireIfStale().
+export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { sendSms } from "./sms";
@@ -131,12 +135,30 @@ function fromRow(r: Row): Appointment {
   };
 }
 
+function appointmentEndsAt(appt: Appointment): number {
+  return new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+}
+
+// Whether a session has started — the earliest point a specialist can
+// meaningfully mark it completed/no_show (they may know at the start that a
+// patient hasn't joined, no need to wait for the full duration to elapse).
+export function isPastAppointment(appt: Appointment, now = new Date()): boolean {
+  return new Date(appt.startsAt).getTime() <= now.getTime();
+}
+
 // A hold blocks the slot only until it expires — treat it as free again
-// afterwards instead of leaving a dead "held" record in the way.
+// afterwards instead of leaving a dead "held" record in the way. Likewise, a
+// confirmed appointment nobody explicitly marked completed/no_show for
+// eventually defaults to "completed" (ATTENDANCE_GRACE_HOURS after it ends)
+// — a specialist who forgets to attend to a past visit shouldn't leave it
+// stuck reading "confirmed" forever.
 async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment> {
   if (appt.status === "held" && appt.heldUntil && new Date(appt.heldUntil) <= now) {
     await db().from("appointments").update({ status: "cancelled" }).eq("id", appt.id).eq("status", "held");
     appt.status = "cancelled";
+  } else if (appt.status === "confirmed" && appointmentEndsAt(appt) + ATTENDANCE_GRACE_HOURS * 3_600_000 <= now.getTime()) {
+    await db().from("appointments").update({ status: "completed" }).eq("id", appt.id).eq("status", "confirmed");
+    appt.status = "completed";
   }
   return appt;
 }
@@ -315,6 +337,30 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
   return fromRow(data as Row);
 }
 
+// Explicit outcome for a past session — the counterpart to the automatic
+// completion in expireIfStale(). "no_show" can only be set this way: the
+// system has no signal that a patient didn't attend beyond a specialist
+// saying so.
+export async function markAttendance(
+  id: string,
+  outcome: Extract<AppointmentStatus, "completed" | "no_show">,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.status !== "confirmed") throw new Error("only a confirmed appointment can be marked");
+  if (!isPastAppointment(appt, now)) throw new Error("appointment hasn't started yet");
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: outcome })
+    .eq("id", id)
+    .eq("status", "confirmed")
+    .select(APPOINTMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
+}
+
 // A practitioner's own visit list — same service-role db(), just filtered
 // and ordered instead of open-ended, since a doctor only ever needs their own.
 export async function getAppointmentsForPractitioner(
@@ -343,6 +389,12 @@ export type ReminderCandidate = {
 // since. Outreach itself is manual (call/SMS) — same "stub the delivery,
 // build the real logic" pattern as confirmPayment() before Stripe landed —
 // this just surfaces who to call.
+//
+// Includes both "confirmed" (future, or past but still inside the
+// ATTENDANCE_GRACE_HOURS window) and "completed" (settled past visits) —
+// past visits don't stay "confirmed" forever once expireIfStale() runs, so
+// this can't filter on "confirmed" alone without silently losing everyone
+// whose last visit already auto-completed.
 export async function getPatientsToRemind(
   practitionerId: string,
   now = new Date()
@@ -351,7 +403,7 @@ export async function getPatientsToRemind(
     .from("appointments")
     .select(APPOINTMENT_SELECT)
     .eq("practitioner_id", practitionerId)
-    .eq("status", "confirmed")
+    .in("status", ["confirmed", "completed"])
     .order("starts_at", { ascending: false });
   if (error) throw error;
 

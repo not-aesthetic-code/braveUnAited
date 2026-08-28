@@ -14,8 +14,12 @@ import {
   rescheduleAppointment,
   canManage,
   listAvailableSlots,
+  getAppointment,
+  markAttendance,
+  getPatientsToRemind,
   HOLD_MINUTES,
   MAX_RESCHEDULES,
+  ATTENDANCE_GRACE_HOURS,
 } from "./appointments";
 
 const contact = { name: "Test", email: "selfcheck@example.com", phone: "123" };
@@ -79,6 +83,54 @@ async function main() {
     assert.ok(
       pelnoSlots.every((s) => new Date(s.startsAt).getTime() >= new Date("2026-09-10T10:30:00Z").getTime()),
       "pelnoplatna slot overlaps a booked adhd_diagnoza session"
+    );
+  }
+
+  // Attendance: explicit mark only works once the session has started, and
+  // once settled it can't be re-marked.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-10T10:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+
+    await assert.rejects(() => markAttendance(appt.id, "completed", now), "shouldn't be markable before it starts");
+
+    const afterStart = new Date("2026-09-10T10:05:00Z");
+    const noShow = await markAttendance(appt.id, "no_show", afterStart);
+    assert.equal(noShow.status, "no_show");
+    await assert.rejects(() => markAttendance(appt.id, "completed", afterStart), "already settled, shouldn't be re-markable");
+  }
+
+  // Unmarked confirmed visits default to "completed" ATTENDANCE_GRACE_HOURS
+  // after they end, instead of reading "confirmed" forever.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-12T10:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+    const endsAt = new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+
+    const stillInGrace = new Date(endsAt + ATTENDANCE_GRACE_HOURS * 3_600_000 - 1000);
+    assert.equal((await getAppointment(appt.id, stillInGrace))?.status, "confirmed");
+
+    const pastGrace = new Date(endsAt + ATTENDANCE_GRACE_HOURS * 3_600_000 + 1000);
+    assert.equal((await getAppointment(appt.id, pastGrace))?.status, "completed");
+  }
+
+  // getPatientsToRemind must still surface a visit that already auto-completed
+  // — filtering on status "confirmed" alone would silently lose it once
+  // expireIfStale() settles it.
+  {
+    const holdNow = new Date("2025-12-31T00:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-3", serviceType: "niskoplatna", startsAt: "2026-01-01T10:00:00Z", patientContact: contact }, holdNow);
+    const appt = await confirmPayment(held.id, holdNow);
+
+    const now = new Date("2026-09-01T10:00:00Z"); // months later — well past the grace window and the 6-week reminder cutoff
+    assert.equal((await getAppointment(appt.id, now))?.status, "completed");
+
+    const reminders = await getPatientsToRemind("spec-3", now);
+    assert.ok(
+      reminders.some((r) => r.patient.id === appt.patientId),
+      "auto-completed visit should still surface for reminder outreach"
     );
   }
 

@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { getAppointmentsForPractitioner, getPatientsToRemind, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
+import { getAppointmentsForPractitioner, getPatientsToRemind, isPastAppointment, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
-import { logoutAction } from "./actions";
+import { logoutAction, markAttendanceAction } from "./actions";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -88,6 +88,16 @@ export default async function DoctorPanelPage() {
               <span>Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span></span>
               <span>Pacjent: <span className="font-medium">{appt.patient.name}</span></span>
             </div>
+            {appt.status === "confirmed" && isPastAppointment(appt) && (
+              <div className="mt-3 flex gap-2">
+                <form action={markAttendanceAction.bind(null, appt.id, "completed")}>
+                  <Button type="submit" variant="outline" size="sm">Wizyta się odbyła</Button>
+                </form>
+                <form action={markAttendanceAction.bind(null, appt.id, "no_show")}>
+                  <Button type="submit" variant="outline" size="sm">Pacjent się nie zjawił</Button>
+                </form>
+              </div>
+            )}
           </div>
         ))}
       </div>
