@@ -15,7 +15,7 @@ export default async function Home() {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center justify-between border-b px-6 py-4">
-        <span className="font-semibold tracking-tight">Fundacja Niepodzielni</span>
+        <Image src="/logo.svg" alt="Fundacja Niepodzielni" width={180} height={57} priority />
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">Pomoc psychologiczna</span>
           <LoginDialog />

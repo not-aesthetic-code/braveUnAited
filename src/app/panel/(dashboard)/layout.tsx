@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { redirect } from "next/navigation";
 import {
   CalendarCheck,
@@ -48,7 +49,7 @@ export default async function PanelDashboardLayout({ children }: { children: Rea
   return (
     <div className="flex min-h-screen">
       <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r bg-card px-4 py-6 lg:flex">
-        <span className="px-2 font-semibold tracking-tight">Fundacja Niepodzielni</span>
+        <Image src="/logo.svg" alt="Fundacja Niepodzielni" width={140} height={45} className="px-2" priority />
         {NAV_GROUPS.map((group) => (
           <div key={group.label} className="flex flex-col gap-1">
             <span className="px-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">{group.label}</span>

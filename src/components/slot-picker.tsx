@@ -96,6 +96,7 @@ export function SlotPicker({
   services = [],
   practitioners = [],
   initialServiceType,
+  skipSpecialistStep,
 }: {
   slots: Slot[];
   selectedSlot: Slot | null;
@@ -114,6 +115,11 @@ export function SlotPicker({
   // Preselects the type filter (e.g. arriving via /book?service=X) without
   // hiding the other types — the calendar still combines every type.
   initialServiceType?: ServiceType;
+  // Practitioner reschedule flow: slots are already filtered to one
+  // specialist, so picking a day/time is the whole job — hide the "who's
+  // free" column and select that specialist's slot immediately instead of
+  // making them click their own name.
+  skipSpecialistStep?: boolean;
 }) {
   const serviceById = useMemo(
     () => new Map(services.map((s) => [s.id, s])),
@@ -213,11 +219,16 @@ export function SlotPicker({
     setSelectedDay(first.startsAt);
     setSelectedTime(formatTime(first.startsAt));
     onDayChange?.();
+    if (skipSpecialistStep) onSelect(first);
   }
 
   function pickTime(time: string) {
     setSelectedTime(time);
     onDayChange?.();
+    if (skipSpecialistStep) {
+      const match = daySlots.find((s) => formatTime(s.startsAt) === time);
+      if (match) onSelect(match);
+    }
   }
 
   return (
@@ -255,7 +266,7 @@ export function SlotPicker({
         </div>
       )}
 
-      {specialists.length > 1 && (
+      {!skipSpecialistStep && specialists.length > 1 && (
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -293,7 +304,11 @@ export function SlotPicker({
             cards' own min-content width can still exceed the container —
             scroll horizontally instead of silently clipping that column. */}
         <div className="overflow-x-auto">
-          <div className="grid grid-cols-1 gap-8 @3xl:grid-cols-[320px_150px_1fr] @3xl:min-w-[760px]">
+          <div
+            className={`grid grid-cols-1 gap-8 @3xl:min-w-[760px] ${
+              skipSpecialistStep ? "@3xl:grid-cols-[320px_1fr]" : "@3xl:grid-cols-[320px_150px_1fr]"
+            }`}
+          >
             {/* calendar — availability only exists within the 7-day publish
               horizon (listAvailableSlots), so most cells are simply unbookable */}
             <div>
@@ -330,7 +345,7 @@ export function SlotPicker({
                 ))}
               </div>
 
-              <div className="grid grid-cols-7 gap-1">
+              <div className="grid grid-cols-7 gap-1 justify-items-center">
                 {monthGrid.map((d) => {
                   const key = dayKey(d);
                   const inMonth = d.getMonth() === viewMonth.getMonth();
@@ -349,7 +364,7 @@ export function SlotPicker({
                       type="button"
                       disabled={!hasSlots}
                       onClick={() => pickDay(daySlotsForCell)}
-                      className={`flex aspect-square flex-col items-center justify-center gap-1 rounded-xl text-sm transition-colors ${
+                      className={`flex size-10 flex-col items-center justify-center gap-1 rounded-xl text-sm transition-colors ${
                         isSelected
                           ? "bg-primary font-semibold text-primary-foreground"
                           : isToday
@@ -415,6 +430,7 @@ export function SlotPicker({
             </div>
 
             {/* who's free at that day + time */}
+            {!skipSpecialistStep && (
             <div className="flex flex-col gap-3 border-t border-border pt-6 @3xl:border-t-0 @3xl:border-l @3xl:pt-0 @3xl:pl-6">
               {selectedDay && selectedTime && (
                 <p className="text-sm font-semibold capitalize text-secondary-foreground">
@@ -491,6 +507,7 @@ export function SlotPicker({
                 );
               })}
             </div>
+            )}
           </div>
         </div>
       </div>
