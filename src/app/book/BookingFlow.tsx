@@ -313,14 +313,21 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               placeholder="Imię i nazwisko"
               className="rounded-md border bg-background px-3 py-2 text-sm"
             />
-            <input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="Telefon (wymagany)"
-              type="tel"
-              required
-              className="rounded-md border bg-background px-3 py-2 text-sm"
-            />
+            {/* +48 is a fixed prefix, not part of the value — every patient
+                is calling from Poland (see lib/phone.ts), so there's nothing
+                to pick here. */}
+            <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
+              <span className="text-muted-foreground">+48</span>
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="Telefon (wymagany)"
+                type="tel"
+                inputMode="numeric"
+                required
+                className="w-full bg-transparent outline-none"
+              />
+            </div>
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}

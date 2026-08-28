@@ -46,7 +46,7 @@ export async function startPaymentAction(
     }
 
     const origin = (await headers()).get("origin") ?? "http://localhost:3000";
-    const session = await stripe.checkout.sessions.create({
+    const session = await stripe().checkout.sessions.create({
       mode: "payment",
       ...(appt.patient.email ? { customer_email: appt.patient.email } : {}),
       line_items: [

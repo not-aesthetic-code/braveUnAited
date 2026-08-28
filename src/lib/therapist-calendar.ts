@@ -30,7 +30,7 @@ export type MonthDay = { date: string; inCurrentMonth: boolean };
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-function timeToMinutes(value: string): number | null {
+export function timeToMinutes(value: string): number | null {
   if (!TIME_RE.test(value)) return null;
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;
@@ -91,6 +91,44 @@ export function validateWeeklyAvailability(ranges: WeeklyAvailabilityInput[]): V
     return { ok: false, minutes, error: "Ustaw co najmniej 5 godzin tygodniowo dla wizyt 55 zł lub Darmowych." };
   }
   return { ok: true, minutes };
+}
+
+export type WeeklyRangeInput = { weekday: number; startTime: string; endTime: string };
+
+// Same weekday/ordering/overlap checks as validateWeeklyAvailability, minus
+// the niskopłatna-only service-type gate and the 300-min community floor —
+// used for the pełnopłatna tab, which has neither rule. (The mockup shows no
+// minimum-hours error state for either tab, so the floor is a soft warning
+// rendered from minutesOfEligibleAvailability, not a blocking check here.)
+export function validateWeeklyRanges(ranges: WeeklyRangeInput[]): ExceptionValidationResult {
+  for (const range of ranges) {
+    if (!Number.isInteger(range.weekday) || range.weekday < 1 || range.weekday > 7) {
+      return { ok: false, error: "Wybierz poprawny dzień tygodnia." };
+    }
+    const start = timeToMinutes(range.startTime);
+    const end = timeToMinutes(range.endTime);
+    if (start === null || end === null || end <= start) {
+      return { ok: false, error: "Godzina zakończenia musi być późniejsza niż rozpoczęcia." };
+    }
+  }
+
+  const sorted = [...ranges].sort((a, b) =>
+    a.weekday === b.weekday ? a.startTime.localeCompare(b.startTime) : a.weekday - b.weekday,
+  );
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1];
+    const current = sorted[index];
+    if (previous.weekday !== current.weekday) continue;
+    const previousStart = timeToMinutes(previous.startTime)!;
+    const previousEnd = timeToMinutes(previous.endTime)!;
+    const currentStart = timeToMinutes(current.startTime)!;
+    const currentEnd = timeToMinutes(current.endTime)!;
+    if (rangesOverlap(previousStart, previousEnd, currentStart, currentEnd)) {
+      return { ok: false, error: "Godziny w tym samym dniu nie mogą na siebie nachodzić." };
+    }
+  }
+
+  return { ok: true };
 }
 
 export function validateAvailabilityException(
@@ -186,26 +224,35 @@ export function buildMonthDays(anchor: string): MonthDay[] {
   });
 }
 
-// --- Hour-correction grid -------------------------------------------------
-// The mockup's "Poprawki na konkretnych godzinach" grid: 7 days x whole
-// hours, each cell showing where that hour comes from. Kept pure so the cell
-// states are testable without a browser or a database.
+// --- Hour override grid ---------------------------------------------------
+// The mockup's "Poprawki na konkretnych godzinach": 7 days x whole hours,
+// each cell labelled with where that hour comes from. Pure, so the cell
+// states stay testable without a browser or a database.
+//
+// Conventions here follow the rest of the panel rather than this file's own
+// older helpers: `dayOfWeek` is 0=Sunday..6=Saturday (the DB check
+// constraint, and what WeeklyAvailabilityRange already carries), and the
+// service is the plain `service_id` string the availability rows are scoped
+// by. That keeps the grid free of back-and-forth weekday conversions.
 
 export const GRID_FIRST_HOUR = 8;
 export const GRID_LAST_HOUR = 19;
+// 7 days exactly, because MAX_SLOT_DAYS_AHEAD is 7 — a practitioner cannot
+// publish availability further out than the grid can show.
 export const GRID_DAYS = 7;
 
-export type HourCellState = "empty" | "rhythm" | "added" | "disabled" | "busy" | "absence";
+export type HourCellState = "empty" | "rhythm" | "added" | "removed" | "booked";
 
-export type HourCorrection = {
-  id: string;
+export type RhythmRange = { dayOfWeek: number; startTime: string; endTime: string };
+
+export type HourOverride = {
   date: string;
-  startTime: string;
+  hour: number;
   kind: "open" | "closed";
-  serviceType: CommunityServiceType;
 };
 
-export type BusyBlock = { date: string; startHour: number; endHour: number };
+/** A booked visit, already reduced to the whole hours it covers. */
+export type BookedBlock = { date: string; startHour: number; endHour: number };
 
 export type HourCell = { date: string; hour: number; state: HourCellState };
 
@@ -218,73 +265,52 @@ export function gridDates(from: string): string[] {
   return Array.from({ length: GRID_DAYS }, (_, index) => addUtcDays(from, index));
 }
 
-export function weekdayOf(date: string): number {
-  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
-  return day === 0 ? 7 : day;
+/** 0=Sunday..6=Saturday, matching calendar_availability.day_of_week. */
+export function dayOfWeekOf(date: string): number {
+  return new Date(`${date}T12:00:00Z`).getUTCDay();
 }
 
 export function buildHourGrid(input: {
   from: string;
-  serviceType: CommunityServiceType;
-  rhythm: WeeklyAvailabilityInput[];
-  corrections: HourCorrection[];
-  absences: AvailabilityExceptionInput[];
-  busy: BusyBlock[];
+  rhythm: RhythmRange[];
+  overrides: HourOverride[];
+  booked: BookedBlock[];
 }): HourCell[] {
   const hours = gridHours();
   return gridDates(input.from).flatMap((date) => {
-    const weekday = weekdayOf(date);
-    return hours.map((hour) => {
+    const dayOfWeek = dayOfWeekOf(date);
+    return hours.map((hour): HourCell => {
       const cellStart = hour * 60;
       const cellEnd = cellStart + 60;
-      const covers = (start: string, end: string) => {
-        const from = timeToMinutes(start);
-        const to = timeToMinutes(end);
-        return from !== null && to !== null && rangesOverlap(from, to, cellStart, cellEnd);
-      };
 
-      // Order matters: a booked visit outranks every editable state, and a
-      // holiday outranks the rhythm the same way it does on the server.
-      if (input.busy.some((block) => block.date === date && block.startHour < hour + 1 && hour < block.endHour)) {
-        return { date, hour, state: "busy" as const };
-      }
-      if (input.absences.some((item) => item.date === date && covers(item.startTime, item.endTime))) {
-        return { date, hour, state: "absence" as const };
+      // A booked visit outranks every editable state: the practitioner
+      // cannot close an hour a patient already holds.
+      if (input.booked.some((block) => block.date === date && block.startHour < hour + 1 && hour < block.endHour)) {
+        return { date, hour, state: "booked" };
       }
 
-      const correction = input.corrections.find(
-        (item) =>
-          item.date === date &&
-          item.serviceType === input.serviceType &&
-          timeToMinutes(item.startTime) === cellStart,
-      );
-      if (correction) return { date, hour, state: correction.kind === "open" ? ("added" as const) : ("disabled" as const) };
+      const override = input.overrides.find((item) => item.date === date && item.hour === hour);
+      if (override) return { date, hour, state: override.kind === "open" ? "added" : "removed" };
 
-      const inRhythm = input.rhythm.some(
-        (range) =>
-          range.weekday === weekday &&
-          range.serviceType === input.serviceType &&
-          covers(range.startTime, range.endTime),
-      );
-      return { date, hour, state: inRhythm ? ("rhythm" as const) : ("empty" as const) };
+      const inRhythm = input.rhythm.some((range) => {
+        if (range.dayOfWeek !== dayOfWeek) return false;
+        const start = timeToMinutes(range.startTime);
+        const end = timeToMinutes(range.endTime);
+        return start !== null && end !== null && rangesOverlap(start, end, cellStart, cellEnd);
+      });
+      return { date, hour, state: inRhythm ? "rhythm" : "empty" };
     });
   });
 }
 
-// What a click on a cell should do. Returning the intent (rather than
-// mutating) keeps the decision in one tested place shared by UI and server.
-export function nextCorrection(state: HourCellState): "open" | "closed" | "clear" | null {
+/**
+ * What a click on a cell should do. Returning the intent rather than
+ * mutating keeps the decision in one tested place, shared by the grid and
+ * the server action that writes the row.
+ */
+export function nextOverride(state: HourCellState): "open" | "closed" | "clear" | null {
   if (state === "rhythm") return "closed";
   if (state === "empty") return "open";
-  if (state === "added" || state === "disabled") return "clear";
+  if (state === "added" || state === "removed") return "clear";
   return null;
-}
-
-export function countWeeklySlots(ranges: WeeklyAvailabilityInput[], stepMinutes = 60): number {
-  return ranges.reduce((total, range) => {
-    const start = timeToMinutes(range.startTime);
-    const end = timeToMinutes(range.endTime);
-    if (start === null || end === null || end <= start) return total;
-    return total + Math.floor((end - start) / stepMinutes);
-  }, 0);
 }

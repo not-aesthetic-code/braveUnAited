@@ -61,8 +61,14 @@ export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
+// A specialist has this long after a session ends to explicitly mark
+// completed/no_show before the system defaults it to "completed" — see
+// expireIfStale().
+export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { sendEmail } from "./email";
+import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
 
 // Lazy singleton — a top-level createClient() call would throw at build
@@ -131,12 +137,30 @@ function fromRow(r: Row): Appointment {
   };
 }
 
+function appointmentEndsAt(appt: Appointment): number {
+  return new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+}
+
+// Whether a session has started — the earliest point a specialist can
+// meaningfully mark it completed/no_show (they may know at the start that a
+// patient hasn't joined, no need to wait for the full duration to elapse).
+export function isPastAppointment(appt: Appointment, now = new Date()): boolean {
+  return new Date(appt.startsAt).getTime() <= now.getTime();
+}
+
 // A hold blocks the slot only until it expires — treat it as free again
-// afterwards instead of leaving a dead "held" record in the way.
+// afterwards instead of leaving a dead "held" record in the way. Likewise, a
+// confirmed appointment nobody explicitly marked completed/no_show for
+// eventually defaults to "completed" (ATTENDANCE_GRACE_HOURS after it ends)
+// — a specialist who forgets to attend to a past visit shouldn't leave it
+// stuck reading "confirmed" forever.
 async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment> {
   if (appt.status === "held" && appt.heldUntil && new Date(appt.heldUntil) <= now) {
     await db().from("appointments").update({ status: "cancelled" }).eq("id", appt.id).eq("status", "held");
     appt.status = "cancelled";
+  } else if (appt.status === "confirmed" && appointmentEndsAt(appt) + ATTENDANCE_GRACE_HOURS * 3_600_000 <= now.getTime()) {
+    await db().from("appointments").update({ status: "completed" }).eq("id", appt.id).eq("status", "confirmed");
+    appt.status = "completed";
   }
   return appt;
 }
@@ -148,14 +172,22 @@ export async function getAppointment(id: string, now = new Date()): Promise<Appo
 }
 
 // Dedup key is phone — the only identifier guest booking reliably collects.
+// Normalized first (see phone.ts — +48 is hardcoded, every patient is
+// Polish) so "600 100 200" and "600-100-200" from two different bookings
+// resolve to the same patient instead of two rows — the `patients.phone`
+// column is `unique`, so an unnormalized duplicate would otherwise fail the
+// insert instead of merging.
 // Never overwrite an already-set email on conflict: /konto looks bookings up
 // by email, so silently moving a patient's email to whatever they typed on
 // their latest booking would strand their older bookings under the old one.
 async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
+  const phone = normalizePolishPhone(contact.phone);
+  if (!phone) throw new Error("podaj poprawny polski numer telefonu, np. 600 123 456");
+
   const { data: existing, error: lookupError } = await db()
     .from("patients")
     .select("id, email")
-    .eq("phone", contact.phone)
+    .eq("phone", phone)
     .maybeSingle();
   if (lookupError) throw lookupError;
 
@@ -169,7 +201,7 @@ async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: stri
 
   const { data, error } = await db()
     .from("patients")
-    .insert({ name: contact.name, email: contact.email || null, phone: contact.phone })
+    .insert({ name: contact.name, email: contact.email || null, phone })
     .select("id")
     .single();
   if (error) throw error;
@@ -315,6 +347,30 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
   return fromRow(data as Row);
 }
 
+// Explicit outcome for a past session — the counterpart to the automatic
+// completion in expireIfStale(). "no_show" can only be set this way: the
+// system has no signal that a patient didn't attend beyond a specialist
+// saying so.
+export async function markAttendance(
+  id: string,
+  outcome: Extract<AppointmentStatus, "completed" | "no_show">,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.status !== "confirmed") throw new Error("only a confirmed appointment can be marked");
+  if (!isPastAppointment(appt, now)) throw new Error("appointment hasn't started yet");
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: outcome })
+    .eq("id", id)
+    .eq("status", "confirmed")
+    .select(APPOINTMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
+}
+
 // A practitioner's own visit list — same service-role db(), just filtered
 // and ordered instead of open-ended, since a doctor only ever needs their own.
 export async function getAppointmentsForPractitioner(
@@ -336,13 +392,22 @@ export const REMINDER_AFTER_WEEKS = 6;
 export type ReminderCandidate = {
   patient: { id: string; name: string; email: string; phone: string };
   lastVisitAt: string; // ISO — most recent confirmed appointment in the past
+  lastReminderSentAt: string | null; // ISO — see sendVisitReminderEmail()
 };
 
 // Patients a practitioner should reach out to: their most recent confirmed
 // appointment was REMINDER_AFTER_WEEKS+ ago, and they have nothing booked
-// since. Outreach itself is manual (call/SMS) — same "stub the delivery,
-// build the real logic" pattern as confirmPayment() before Stripe landed —
-// this just surfaces who to call.
+// since. Applies across every service type — nothing here is ADHD-specific,
+// unlike the immediate booking-confirmation SMS in confirmPayment(), which
+// is a different feature entirely. Outreach is specialist-triggered (see
+// sendVisitReminderEmail(), wired to a button in /panel) rather than
+// automatic, so a patient isn't re-emailed on every /panel page load.
+//
+// Includes both "confirmed" (future, or past but still inside the
+// ATTENDANCE_GRACE_HOURS window) and "completed" (settled past visits) —
+// past visits don't stay "confirmed" forever once expireIfStale() runs, so
+// this can't filter on "confirmed" alone without silently losing everyone
+// whose last visit already auto-completed.
 export async function getPatientsToRemind(
   practitionerId: string,
   now = new Date()
@@ -351,17 +416,25 @@ export async function getPatientsToRemind(
     .from("appointments")
     .select(APPOINTMENT_SELECT)
     .eq("practitioner_id", practitionerId)
-    .eq("status", "confirmed")
+    .in("status", ["confirmed", "completed"])
     .order("starts_at", { ascending: false });
   if (error) throw error;
 
-  const appts = ((data ?? []) as Row[]).map(fromRow);
+  // patients(*) in APPOINTMENT_SELECT already pulls last_reminder_sent_at —
+  // it's just not part of the narrower Row/Appointment "patient" shape used
+  // elsewhere, so it's read off the raw row instead of threaded through
+  // fromRow().
+  type RowWithReminderState = Row & { patient: Row["patient"] & { last_reminder_sent_at: string | null } };
+  const appts = ((data ?? []) as RowWithReminderState[]).map((r) => ({
+    ...fromRow(r),
+    lastReminderSentAt: r.patient.last_reminder_sent_at,
+  }));
   const nowMs = now.getTime();
   const cutoffMs = nowMs - REMINDER_AFTER_WEEKS * 7 * 86_400_000;
 
   // Rows are ordered newest-first, so the first past appointment seen per
   // patient is their most recent one.
-  const lastPastVisit = new Map<string, Appointment>();
+  const lastPastVisit = new Map<string, (typeof appts)[number]>();
   const hasUpcoming = new Set<string>();
   for (const appt of appts) {
     if (new Date(appt.startsAt).getTime() >= nowMs) {
@@ -375,10 +448,33 @@ export async function getPatientsToRemind(
   for (const [patientId, appt] of lastPastVisit) {
     if (hasUpcoming.has(patientId)) continue;
     if (new Date(appt.startsAt).getTime() <= cutoffMs) {
-      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt });
+      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt, lastReminderSentAt: appt.lastReminderSentAt });
     }
   }
   return candidates.sort((a, b) => a.lastVisitAt.localeCompare(b.lastVisitAt));
+}
+
+// Fires the getPatientsToRemind() outreach as an actual email instead of
+// leaving it as a call-list, and records when it went out so /panel can show
+// "already sent" instead of offering to resend on every reload. A
+// phone-only guest patient has no email to send to — the caller (the
+// specialist, via the panel) still has phone/call as the fallback for them.
+export async function sendVisitReminderEmail(patientId: string, now = new Date()): Promise<void> {
+  const { data: patient, error } = await db().from("patients").select("name, email").eq("id", patientId).single();
+  if (error) throw error;
+  if (!patient.email) throw new Error("patient has no email on file — call instead");
+
+  sendEmail(
+    patient.email,
+    "Zapraszamy na kolejną wizytę",
+    `Cześć ${patient.name}, minęło trochę czasu od Twojej ostatniej wizyty. Jeśli chcesz umówić kolejną, zajrzyj na naszą stronę.`
+  );
+
+  const { error: updateError } = await db()
+    .from("patients")
+    .update({ last_reminder_sent_at: now.toISOString() })
+    .eq("id", patientId);
+  if (updateError) throw updateError;
 }
 
 // Optional patient account (/konto) — matched by email via Supabase Auth
@@ -683,4 +779,229 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
     }
   }
   return slots;
+}
+
+// --- Practitioner-facing weekly rhythm editor (/panel/dostepnosc) ---------
+
+// The two service tabs this screen manages. adhd_diagnoza/asystent_zdrowienia/
+// bezplatna keep whatever calendar_availability rows they already have —
+// no screen edits them yet.
+export type ManagedAvailabilityService = "pelnoplatna" | "niskoplatna";
+
+export type WeeklyAvailabilityRange = {
+  id: string;
+  dayOfWeek: number; // 0=Sunday..6=Saturday, matches the DB check constraint
+  startTime: string; // "HH:MM"
+  endTime: string;
+};
+
+async function getCalendarId(practitionerId: string): Promise<string> {
+  const { data, error } = await db()
+    .from("calendars")
+    .select("id")
+    .eq("practitioner_id", practitionerId)
+    .single();
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function getWeeklyAvailability(
+  practitionerId: string
+): Promise<Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_availability")
+    .select("id, service_id, day_of_week, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .in("service_id", ["pelnoplatna", "niskoplatna"])
+    .order("day_of_week")
+    .order("start_time");
+  if (error) throw error;
+
+  const result: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]> = {
+    pelnoplatna: [],
+    niskoplatna: [],
+  };
+  for (const row of (data ?? []) as {
+    id: string;
+    service_id: ManagedAvailabilityService;
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+  }[]) {
+    result[row.service_id].push({
+      id: row.id,
+      dayOfWeek: row.day_of_week,
+      startTime: row.start_time.slice(0, 5),
+      endTime: row.end_time.slice(0, 5),
+    });
+  }
+  return result;
+}
+
+// Replace-all for one practitioner's one service tab. Not a single DB
+// transaction (delete then insert as two calls) — acceptable here since this
+// is a low-traffic admin screen with no concurrent writers per calendar.
+export async function replaceWeeklyAvailability(
+  practitionerId: string,
+  serviceId: ManagedAvailabilityService,
+  ranges: { dayOfWeek: number; startTime: string; endTime: string }[]
+): Promise<void> {
+  const calendarId = await getCalendarId(practitionerId);
+
+  const { error: deleteError } = await db()
+    .from("calendar_availability")
+    .delete()
+    .eq("calendar_id", calendarId)
+    .eq("service_id", serviceId);
+  if (deleteError) throw deleteError;
+
+  if (ranges.length === 0) return;
+
+  const { error: insertError } = await db().from("calendar_availability").insert(
+    ranges.map((r) => ({
+      calendar_id: calendarId,
+      service_id: serviceId,
+      day_of_week: r.dayOfWeek,
+      start_time: r.startTime,
+      end_time: r.endTime,
+    }))
+  );
+  if (insertError) throw insertError;
+}
+
+// --- Hour overrides (/panel/dostepnosc, step 2) ---------------------------
+// One calendar_exceptions row per toggled hour, exactly the shape
+// slotStartsForDay() above already consumes — so the booking side needs no
+// change at all. See docs/dostepnosc/02-poprawki-godzinowe.md.
+//
+// An override is recognised by being scoped to one service and spanning a
+// single whole hour. Leave/urlopy (step 3) are service-wide (service_id
+// null) and multi-hour, so the two never read each other's rows.
+
+// Local rather than imported from therapist-calendar.ts: that module already
+// imports from this one, and a value import would close the cycle.
+const WARSAW_TIME_ZONE = "Europe/Warsaw";
+
+export type StoredHourOverride = { date: string; hour: number; kind: "open" | "closed" };
+
+function addDaysUtc(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+export async function getHourOverrides(
+  practitionerId: string,
+  serviceId: ManagedAvailabilityService,
+  fromDate: string,
+  days = MAX_SLOT_DAYS_AHEAD
+): Promise<StoredHourOverride[]> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_exceptions")
+    .select("date, kind, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .eq("service_id", serviceId)
+    .gte("date", fromDate)
+    .lte("date", addDaysUtc(fromDate, days - 1));
+  if (error) throw error;
+
+  return ((data ?? []) as { date: string; kind: string; start_time: string | null; end_time: string | null }[])
+    .filter((row) => row.start_time !== null && row.end_time !== null)
+    .map((row) => ({
+      date: row.date,
+      hour: Number(row.start_time!.slice(0, 2)),
+      kind: row.kind === "open" ? ("open" as const) : ("closed" as const),
+    }));
+}
+
+/**
+ * Booked visits in the grid window, reduced to whole hours. Read straight
+ * from appointments — a held-but-unpaid slot still blocks the hour, the same
+ * way it blocks a patient's booking.
+ */
+export async function getBookedHourBlocks(
+  practitionerId: string,
+  fromDate: string,
+  days = MAX_SLOT_DAYS_AHEAD,
+  now = new Date()
+): Promise<{ date: string; startHour: number; endHour: number }[]> {
+  const from = wallTimeToUtc(fromDate, "00:00", WARSAW_TIME_ZONE);
+  const to = wallTimeToUtc(addDaysUtc(fromDate, days), "00:00", WARSAW_TIME_ZONE);
+  const [{ data, error }, services] = await Promise.all([
+    db()
+      .from("appointments")
+      .select("starts_at, service_id, status, held_until")
+      .eq("practitioner_id", practitionerId)
+      .neq("status", "cancelled")
+      .gte("starts_at", from.toISOString())
+      .lt("starts_at", to.toISOString()),
+    getServices(),
+  ]);
+  if (error) throw error;
+
+  const durationById = new Map(services.map((service) => [service.id, service.durationMinutes]));
+  return ((data ?? []) as { starts_at: string; service_id: string; status: string; held_until: string | null }[])
+    .filter((row) => !(row.status === "held" && row.held_until && new Date(row.held_until) <= now))
+    .map((row) => {
+      const startsAt = new Date(row.starts_at);
+      const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
+        timeZone: WARSAW_TIME_ZONE,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .format(startsAt)
+        .split(":")
+        .map(Number);
+      const endMinutes = hour * 60 + minute + (durationById.get(row.service_id as ServiceType) ?? 0);
+      return {
+        date: ymdInTimeZone(startsAt, WARSAW_TIME_ZONE),
+        startHour: hour,
+        endHour: Math.ceil(endMinutes / 60),
+      };
+    });
+}
+
+/**
+ * Insert or delete the single exception row behind one grid cell. `clear`
+ * deletes it so the hour falls back to whatever the weekly rhythm says,
+ * which is why the delete is keyed on the slot rather than on a row id the
+ * browser would otherwise have to carry.
+ */
+export async function toggleHourOverride(input: {
+  practitionerId: string;
+  serviceId: ManagedAvailabilityService;
+  date: string;
+  hour: number;
+  intent: "open" | "closed" | "clear";
+}): Promise<void> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Niepoprawna data.");
+  if (!Number.isInteger(input.hour) || input.hour < 0 || input.hour > 23) {
+    throw new Error("Niepoprawna godzina.");
+  }
+  const calendarId = await getCalendarId(input.practitionerId);
+  const startTime = `${String(input.hour).padStart(2, "0")}:00`;
+
+  const { error: deleteError } = await db()
+    .from("calendar_exceptions")
+    .delete()
+    .eq("calendar_id", calendarId)
+    .eq("service_id", input.serviceId)
+    .eq("date", input.date)
+    .eq("start_time", startTime);
+  if (deleteError) throw deleteError;
+
+  if (input.intent === "clear") return;
+
+  const { error } = await db().from("calendar_exceptions").insert({
+    calendar_id: calendarId,
+    service_id: input.serviceId,
+    date: input.date,
+    kind: input.intent,
+    start_time: startTime,
+    end_time: `${String(input.hour + 1).padStart(2, "0")}:00`,
+  });
+  if (error) throw error;
 }
