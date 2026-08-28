@@ -1,6 +1,7 @@
-// Shared data layer for the booking slice. In-memory only — good enough for a
-// demo; swap for a real store if the day allows it. Single process, so this
-// resets on every server restart/deploy.
+// Shared data layer for the booking slice. Backed by Supabase Postgres
+// (see supabase/migrations/) via the service_role key — this module is
+// server-only (Server Components / Server Actions), so that key never
+// reaches the browser.
 
 export type ServiceType =
   | "niskoplatna"
@@ -63,59 +64,121 @@ export function priceLabel(serviceType: ServiceType): string {
   return price > 0 ? `${price} zł` : "Bezpłatnie";
 }
 
-const store = new Map<string, Appointment>();
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-function generateId(): string {
-  return Math.random().toString(36).slice(2, 10);
+// Lazy singleton — a top-level createClient() call would throw at build
+// time before SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are configured.
+let _db: SupabaseClient | null = null;
+function db(): SupabaseClient {
+  if (!_db) {
+    _db = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
+      auth: { persistSession: false },
+    });
+  }
+  return _db;
+}
+
+type Row = {
+  id: string;
+  specialist_id: string;
+  service_type: ServiceType;
+  starts_at: string;
+  status: AppointmentStatus;
+  held_until: string | null;
+  patient_name: string;
+  patient_email: string;
+  patient_phone: string;
+  price: number;
+  reschedule_count: number;
+  payment_status: Appointment["paymentStatus"];
+};
+
+function fromRow(r: Row): Appointment {
+  return {
+    id: r.id,
+    specialistId: r.specialist_id,
+    serviceType: r.service_type,
+    startsAt: r.starts_at,
+    status: r.status,
+    heldUntil: r.held_until ?? undefined,
+    patientContact: { name: r.patient_name, email: r.patient_email, phone: r.patient_phone },
+    price: r.price,
+    rescheduleCount: r.reschedule_count,
+    paymentStatus: r.payment_status,
+  };
 }
 
 // A hold blocks the slot only until it expires — treat it as free again
 // afterwards instead of leaving a dead "held" record in the way.
-function expireIfStale(appt: Appointment, now: Date): Appointment {
+async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment> {
   if (appt.status === "held" && appt.heldUntil && new Date(appt.heldUntil) <= now) {
+    await db().from("appointments").update({ status: "cancelled" }).eq("id", appt.id).eq("status", "held");
     appt.status = "cancelled";
   }
   return appt;
 }
 
-export function getAppointment(id: string, now = new Date()): Appointment | undefined {
-  const appt = store.get(id);
-  return appt ? expireIfStale(appt, now) : undefined;
+export async function getAppointment(id: string, now = new Date()): Promise<Appointment | undefined> {
+  const { data, error } = await db().from("appointments").select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data ? expireIfStale(fromRow(data as Row), now) : undefined;
 }
 
-export function holdSlot(input: {
+export async function holdSlot(input: {
   specialistId: string;
   serviceType: ServiceType;
   startsAt: string;
   patientContact: PatientContact;
-}, now = new Date()): Appointment {
+}, now = new Date()): Promise<Appointment> {
   if (new Date(input.startsAt).getTime() - now.getTime() < MIN_LEAD_HOURS * 3_600_000) {
     throw new Error(`must book at least ${MIN_LEAD_HOURS}h in advance`);
   }
+  // Clear a stale hold on this exact slot first, otherwise the unique index
+  // below rejects the new hold even though the old one already expired.
+  await db()
+    .from("appointments")
+    .update({ status: "cancelled" })
+    .eq("specialist_id", input.specialistId)
+    .eq("starts_at", input.startsAt)
+    .eq("status", "held")
+    .lt("held_until", now.toISOString());
+
   const heldUntil = new Date(now.getTime() + HOLD_MINUTES * 60_000).toISOString();
-  const appt: Appointment = {
-    id: generateId(),
-    specialistId: input.specialistId,
-    serviceType: input.serviceType,
-    startsAt: input.startsAt,
-    status: "held",
-    heldUntil,
-    patientContact: input.patientContact,
-    price: priceFor(input.serviceType, input.specialistId),
-    rescheduleCount: 0,
-    paymentStatus: "pending",
-  };
-  store.set(appt.id, appt);
-  return appt;
+  const { data, error } = await db()
+    .from("appointments")
+    .insert({
+      specialist_id: input.specialistId,
+      service_type: input.serviceType,
+      starts_at: input.startsAt,
+      status: "held",
+      held_until: heldUntil,
+      patient_name: input.patientContact.name,
+      patient_email: input.patientContact.email,
+      patient_phone: input.patientContact.phone,
+      price: priceFor(input.serviceType, input.specialistId),
+      payment_status: "pending",
+    })
+    .select()
+    .single();
+  if (error) {
+    if (error.code === "23505") throw new Error("ten termin został już zarezerwowany — wybierz inny");
+    throw error;
+  }
+  return fromRow(data as Row);
 }
 
-export function confirmPayment(id: string, now = new Date()): Appointment {
-  const appt = getAppointment(id, now);
+export async function confirmPayment(id: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
   if (!appt) throw new Error("appointment not found");
   if (appt.status !== "held") throw new Error("hold expired or already confirmed");
-  appt.status = "confirmed";
-  appt.paymentStatus = "paid";
-  return appt;
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: "confirmed", payment_status: "paid" })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
 }
 
 function hoursUntil(appt: Appointment, now: Date): number {
@@ -137,26 +200,36 @@ export function canManage(appt: Appointment, now = new Date()) {
 
 // Rules are enforced here, not just hidden in the UI — this is the trust
 // boundary, a patient could otherwise hit the endpoint directly.
-export function cancelAppointment(id: string, now = new Date()): Appointment {
-  const appt = getAppointment(id, now);
+export async function cancelAppointment(id: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
   if (!appt) throw new Error("appointment not found");
   if (!canManage(appt, now).canCancel) {
     throw new Error("cancellation window has passed — contact the specialist directly");
   }
-  appt.status = "cancelled";
-  appt.paymentStatus = appt.price > 0 ? "refund_due" : appt.paymentStatus;
-  return appt;
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: "cancelled", payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
 }
 
-export function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Appointment {
-  const appt = getAppointment(id, now);
+export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
   if (!appt) throw new Error("appointment not found");
   if (!canManage(appt, now).canReschedule) {
     throw new Error("reschedule window has passed or limit reached");
   }
-  appt.startsAt = newStartsAt;
-  appt.rescheduleCount += 1;
-  return appt;
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ starts_at: newStartsAt, reschedule_count: appt.rescheduleCount + 1 })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
 }
 
 // --- Demo slot search --------------------------------------------------
@@ -195,12 +268,22 @@ function sessionMinutes(serviceType: ServiceType): number {
 // (not just exact start-time matches) block slots for every service, so an
 // ADHD visit (90min) can't be double-booked by a 50min niskoplatna slot that
 // starts partway through it.
-export function listAvailableSlots(serviceType: ServiceType, now = new Date()): Slot[] {
-  const busy = [...store.values()]
-    .filter((a) => expireIfStale(a, now).status !== "cancelled")
+export async function listAvailableSlots(serviceType: ServiceType, now = new Date()): Promise<Slot[]> {
+  const { data, error } = await db()
+    .from("appointments")
+    .select("specialist_id, starts_at, service_type, status, held_until")
+    .neq("status", "cancelled");
+  if (error) throw error;
+
+  const busy = (data ?? [])
+    .filter((a) => !(a.status === "held" && a.held_until && new Date(a.held_until) <= now))
     .map((a) => {
-      const start = new Date(a.startsAt).getTime();
-      return { specialistId: a.specialistId, start, end: start + sessionMinutes(a.serviceType) * 60_000 };
+      const start = new Date(a.starts_at).getTime();
+      return {
+        specialistId: a.specialist_id as string,
+        start,
+        end: start + sessionMinutes(a.service_type as ServiceType) * 60_000,
+      };
     });
 
   const slots: Slot[] = [];

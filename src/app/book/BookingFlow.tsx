@@ -1,12 +1,35 @@
 "use client";
 
 import { useEffect, useMemo, useReducer, useState, useTransition } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { confirmPaymentAction, holdSlotAction } from "./actions";
+import { holdSlotAction, startPaymentAction } from "./actions";
 import type { Appointment, ServiceType, Slot } from "@/lib/appointments";
 
-const dateKey = (iso: string) => new Date(iso).toDateString();
+const dayKey = (d: Date) => d.toDateString();
+const dateKey = (iso: string) => dayKey(new Date(iso));
+
+const WEEKDAY_LABELS = ["Nd", "Pon", "Wt", "Śr", "Czw", "Pt", "Sob"];
+
+function startOfMonth(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+function addMonths(d: Date, n: number) {
+  return new Date(d.getFullYear(), d.getMonth() + n, 1);
+}
+
+// 6 full weeks (Sun–Sat), including the leading/trailing days from
+// neighboring months — same grid shape as every calendar app.
+function buildMonthGrid(monthDate: Date): Date[] {
+  const first = startOfMonth(monthDate);
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    return d;
+  });
+}
 
 function formatDay(iso: string) {
   return new Date(iso).toLocaleDateString("pl-PL", {
@@ -33,7 +56,7 @@ function useCountdown(target: string | undefined) {
   return target ? Math.max(0, new Date(target).getTime() - Date.now()) : 0;
 }
 
-type Phase = "browse" | "form" | "held" | "expired" | "confirmed";
+type Phase = "browse" | "form" | "held" | "expired";
 
 export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType: ServiceType }) {
   const days = useMemo(() => {
@@ -50,6 +73,25 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
 
   const [selectedDay, setSelectedDay] = useState(days[0]);
   const [selectedSpecialist, setSelectedSpecialist] = useState<string>("all");
+  const [viewMonth, setViewMonth] = useState(() =>
+    startOfMonth(days[0] ? new Date(days[0]) : new Date())
+  );
+
+  const slotsByDay = useMemo(() => {
+    const map = new Map<string, Slot[]>();
+    for (const s of slots) {
+      if (selectedSpecialist !== "all" && s.specialistId !== selectedSpecialist) continue;
+      const key = dateKey(s.startsAt);
+      const bucket = map.get(key);
+      if (bucket) bucket.push(s);
+      else map.set(key, [s]);
+    }
+    for (const bucket of map.values()) bucket.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    return map;
+  }, [slots, selectedSpecialist]);
+
+  const monthGrid = useMemo(() => buildMonthGrid(viewMonth), [viewMonth]);
+
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [phase, setPhase] = useState<Phase>("browse");
   const [appt, setAppt] = useState<Appointment | null>(null);
@@ -101,10 +143,12 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
     if (!appt) return;
     setError(null);
     startTransition(async () => {
-      const result = await confirmPaymentAction(appt.id);
+      // Redirects away (free bookings go straight to /my-booking/[id];
+      // paid ones go to Stripe-hosted Checkout, which redirects back there
+      // once the webhook confirms payment) — no local "confirmed" phase.
+      const result = await startPaymentAction(appt.id);
       if (result.ok) {
-        setAppt(result.value);
-        setPhase("confirmed");
+        window.location.href = result.value.url;
       } else {
         setError(result.error);
         setPhase("expired");
@@ -119,45 +163,95 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
     setPhase("browse");
   }
 
-  if (phase === "confirmed" && appt) {
-    return (
-      <div className="rounded-xl border bg-card p-6 text-center">
-        <p className="text-lg font-semibold">Wizyta zarezerwowana ✅</p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {selectedSlot?.specialistName} · {formatDay(appt.startsAt)}, {formatTime(appt.startsAt)}
-        </p>
-        <p className="text-sm text-muted-foreground">
-          {appt.price > 0 ? `Zapłacono ${appt.price} zł` : "Bezpłatnie"}
-        </p>
-        <Link
-          href={`/my-booking/${appt.id}`}
-          className="mt-4 inline-block text-sm underline underline-offset-4"
-        >
-          Zarządzaj rezerwacją
-        </Link>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col gap-6">
-      {/* day strip — this is the "calendar" and matches the 7-day publish
-          horizon in listAvailableSlots, not a full month grid */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {days.map((d) => (
-          <button
-            key={d}
-            onClick={() => {
-              setSelectedDay(d);
-              reset();
-            }}
-            className={`shrink-0 rounded-lg border px-3 py-2 text-sm capitalize ${
-              dateKey(d) === dateKey(selectedDay ?? d) ? "border-primary bg-primary/10" : "bg-card"
-            }`}
-          >
-            {formatDay(d)}
-          </button>
-        ))}
+      {/* month calendar — availability only exists within the 7-day publish
+          horizon (listAvailableSlots), so most cells are simply unbookable */}
+      <div className="overflow-hidden rounded-xl border bg-card">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <p className="text-lg font-semibold capitalize">
+            {viewMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="Poprzedni miesiąc"
+              onClick={() => setViewMonth((m) => addMonths(m, -1))}
+              className="rounded-md border px-2 py-1 text-sm hover:bg-muted"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMonth(startOfMonth(new Date()))}
+              className="rounded-md border px-3 py-1 text-sm hover:bg-muted"
+            >
+              Dziś
+            </button>
+            <button
+              type="button"
+              aria-label="Następny miesiąc"
+              onClick={() => setViewMonth((m) => addMonths(m, 1))}
+              className="rounded-md border px-2 py-1 text-sm hover:bg-muted"
+            >
+              ›
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 border-b text-center text-xs text-muted-foreground">
+          {WEEKDAY_LABELS.map((w) => (
+            <div key={w} className="py-2">
+              {w}
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7 divide-x divide-y divide-border">
+          {monthGrid.map((d) => {
+            const key = dayKey(d);
+            const inMonth = d.getMonth() === viewMonth.getMonth();
+            const isToday = key === dayKey(new Date());
+            const isSelected = !!selectedDay && key === dateKey(selectedDay);
+            const daySlots = slotsByDay.get(key) ?? [];
+            const hasSlots = daySlots.length > 0;
+
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={!hasSlots}
+                onClick={() => {
+                  setSelectedDay(daySlots[0].startsAt);
+                  reset();
+                }}
+                className={`flex min-h-[84px] flex-col items-start gap-1 p-2 text-left transition-colors ${
+                  hasSlots ? "cursor-pointer hover:bg-muted" : "cursor-default"
+                } ${isSelected ? "bg-primary/10" : ""}`}
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm ${
+                    isToday
+                      ? "bg-primary font-semibold text-primary-foreground"
+                      : inMonth
+                        ? "text-foreground"
+                        : "text-muted-foreground/40"
+                  }`}
+                >
+                  {d.getDate()}
+                </span>
+                {hasSlots && (
+                  <span className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+                    {daySlots.slice(0, 2).map((s) => (
+                      <span key={`${s.specialistId}|${s.startsAt}`}>{formatTime(s.startsAt)}</span>
+                    ))}
+                    {daySlots.length > 2 && <span>+{daySlots.length - 2} więcej</span>}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {specialists.length > 1 && (

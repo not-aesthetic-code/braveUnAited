@@ -19,7 +19,7 @@ export default async function BookPage(props: PageProps<"/book">) {
     );
   }
 
-  const slots = listAvailableSlots(serviceType);
+  const slots = await listAvailableSlots(serviceType);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-16">

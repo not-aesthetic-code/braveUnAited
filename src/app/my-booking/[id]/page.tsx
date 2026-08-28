@@ -20,7 +20,7 @@ const PAYMENT_LABEL: Record<string, string> = {
 
 export default async function ManageBookingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const appt = getAppointment(id);
+  const appt = await getAppointment(id);
 
   if (!appt) {
     return (
@@ -33,7 +33,7 @@ export default async function ManageBookingPage({ params }: { params: Promise<{ 
 
   const { canCancel, canReschedule } = canManage(appt);
   const rescheduleOptions = canReschedule
-    ? listAvailableSlots(appt.serviceType).filter((s) => s.specialistId === appt.specialistId)
+    ? (await listAvailableSlots(appt.serviceType)).filter((s) => s.specialistId === appt.specialistId)
     : [];
 
   return (
