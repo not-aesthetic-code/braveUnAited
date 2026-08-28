@@ -13,3 +13,4 @@ Format: `HH:MM  who  what changed`
 ## 2026-08-28 (hackathon day)
 
 <!-- add entries below as you push -->
+- optional patient account: `/konto/login` (email magic link + Google SSO via Supabase), `/konto` lists bookings by email, `/auth/callback` exchanges the code. Guest `/my-booking/[id]` flow unchanged. Google SSO needs the provider enabled in the Supabase dashboard (client id/secret) — not something code can do.

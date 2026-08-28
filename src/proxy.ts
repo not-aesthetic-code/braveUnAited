@@ -1,7 +1,11 @@
 // Next.js 16 renamed middleware.ts to proxy.ts — same runtime, same job:
-// refresh the doctor's session cookie and gate /panel behind it.
+// refresh the session cookie and gate the logged-in areas behind it. Two
+// separate account spaces share this Supabase auth (doctors under /panel,
+// optional patient accounts under /konto) — same guard shape, different base.
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+
+const GUARDED_BASES = ["/panel", "/konto"];
 
 export default async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -25,18 +29,24 @@ export default async function proxy(request: NextRequest) {
 
   const { data } = await supabase.auth.getClaims();
   const isLoggedIn = !!data?.claims;
-  const isLoginPage = request.nextUrl.pathname === "/panel/login";
 
-  if (!isLoggedIn && !isLoginPage) {
-    return NextResponse.redirect(new URL("/panel/login", request.url));
-  }
-  if (isLoggedIn && isLoginPage) {
-    return NextResponse.redirect(new URL("/panel", request.url));
+  const { pathname } = request.nextUrl;
+  const base = GUARDED_BASES.find((b) => pathname.startsWith(b));
+  if (base) {
+    const loginPage = `${base}/login`;
+    const isLoginPage = pathname === loginPage;
+
+    if (!isLoggedIn && !isLoginPage) {
+      return NextResponse.redirect(new URL(loginPage, request.url));
+    }
+    if (isLoggedIn && isLoginPage) {
+      return NextResponse.redirect(new URL(base, request.url));
+    }
   }
 
   return response;
 }
 
 export const config = {
-  matcher: ["/panel/:path*"],
+  matcher: ["/panel/:path*", "/konto/:path*"],
 };

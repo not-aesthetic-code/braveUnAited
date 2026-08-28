@@ -249,6 +249,20 @@ export async function getAppointmentsForSpecialist(
   return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
 }
 
+export async function getAppointmentsForPatientEmail(
+  email: string,
+  now = new Date()
+): Promise<Appointment[]> {
+  const { data, error } = await db()
+    .from("appointments")
+    .select("*")
+    .eq("patient_email", email)
+    .neq("status", "cancelled")
+    .order("starts_at", { ascending: true });
+  if (error) throw error;
+  return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
+}
+
 // --- Demo slot search --------------------------------------------------
 
 export type Specialist = {

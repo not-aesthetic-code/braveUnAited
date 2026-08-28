@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { canManage, getAppointment, listAvailableSlots, SERVICE_LABELS } from "@/lib/appointments";
-import { cancelBookingAction, rescheduleBookingAction } from "./actions";
+import { canManage, confirmPayment, getAppointment, listAvailableSlots, SERVICE_LABELS } from "@/lib/appointments";
+import { stripe } from "@/lib/stripe";
+import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
 
 const STATUS_LABEL: Record<string, string> = {
   held: "Oczekuje na płatność",
@@ -18,9 +19,27 @@ const PAYMENT_LABEL: Record<string, string> = {
   refunded: "Zwrócono",
 };
 
-export default async function ManageBookingPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ManageBookingPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ checkout?: string; session_id?: string }>;
+}) {
   const { id } = await params;
-  const appt = await getAppointment(id);
+  const { checkout, session_id: sessionId } = await searchParams;
+  let appt = await getAppointment(id);
+
+  // Fallback for local dev: the webhook (src/app/api/stripe/webhook) is the
+  // real source of truth, but it only fires while `stripe listen` is running
+  // — reconcile from the redirect itself too, so a payment doesn't look
+  // "unpaid" forever just because the listener wasn't up at the time.
+  if (appt?.status === "held" && checkout === "success" && sessionId) {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (session.payment_status !== "unpaid") {
+      appt = await confirmPayment(id).catch(() => appt);
+    }
+  }
 
   if (!appt) {
     return (
@@ -62,6 +81,20 @@ export default async function ManageBookingPage({ params }: { params: Promise<{ 
           {appt.price > 0 ? `${appt.price} zł` : "Bezpłatnie"}
         </p>
       </div>
+
+      {appt.status === "held" && (
+        <form action={payBookingAction.bind(null, appt.id)}>
+          <Button type="submit">
+            {appt.price > 0 ? `Zapłać ${appt.price} zł i potwierdź` : "Potwierdź bezpłatną wizytę"}
+          </Button>
+        </form>
+      )}
+
+      {appt.status === "cancelled" && (
+        <p className="text-sm text-muted-foreground">
+          Termin wygasł lub został odwołany. <Link href="/" className="underline">Wybierz nowy termin</Link>.
+        </p>
+      )}
 
       {appt.status === "confirmed" && !canCancel && (
         <p className="text-sm text-muted-foreground">
