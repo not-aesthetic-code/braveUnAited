@@ -43,6 +43,14 @@ export const PRICE_BY_SERVICE: Record<ServiceType, number> = {
   bezplatna: 0,
 };
 
+export const SERVICE_LABELS: Record<ServiceType, { title: string; description: string }> = {
+  niskoplatna: { title: "Konsultacja niskopłatna", description: "Do 10 wizyt na pacjenta" },
+  pelnoplatna: { title: "Konsultacja pełnopłatna", description: "Pełna stawka specjalisty" },
+  adhd_diagnoza: { title: "Diagnoza ADHD", description: "Pełna diagnostyka" },
+  asystent_zdrowienia: { title: "Asystent zdrowienia", description: "Wsparcie między sesjami" },
+  bezplatna: { title: "Bezpłatna konsultacja", description: "Pierwszy kontakt, bez opłat" },
+};
+
 const store = new Map<string, Appointment>();
 
 function generateId(): string {
