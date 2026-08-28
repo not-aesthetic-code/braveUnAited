@@ -103,8 +103,45 @@ tak samo wyrazić hexem bez dodatkowego kanału alfa.
 - Struktura komponentów i layout bez zmian — to wyłącznie zmiana tokenów
   wizualnych.
 
+## Stany interakcji (hover/focus) — rozszerzenie zakresu, 2026-08-28
+
+Po wdrożeniu tokenów bazowych użytkownik zauważył, że strona wygląda
+"czarno-biało" — okazało się to poprawnym zachowaniem (strona główna
+faktycznie nie używa `primary`/`accent` nigdzie poza CTA), ale przy
+weryfikacji zrzutami ekranu z referencji ujawniło się coś realnego:
+referencja ma spójny, celowy język kolorystyczny **stanów interakcji**
+(hover/focus), którego ta zmiana pierwotnie nie objęła — aplikacja
+wszędzie używa tylko generycznego `hover:bg-muted`, bez rozróżnienia
+kolorem.
+
+Źródło: pełny bundle CSS referencji (pobrany, przeanalizowany pod kątem
+reguł `:hover`) plus zrzuty ekranu potwierdzające realne kolory
+(`Moje konto`: `#707070` domyślnie → `#1500bb` na hover, dokładnie jak
+`.btn-ghost:hover{color:var(--text-strong)}` w źródle referencji).
+
+**Zasada:** zielony (`primary`) = potwierdzenie/pozytywna akcja (CTA,
+karty prowadzące do rezerwacji). Indygo (`secondary`) = zaznaczenie/focus
+(pola, sloty, przyciski ghost/outline, wiersze list). Obecnie w kodzie
+wszystko ma tylko jeden neutralny szary hover.
+
+| Plik | Element | Teraz | Docelowo (wzorzec referencji) |
+|---|---|---|---|
+| `src/components/ui/button.tsx` (warianty `outline`, `ghost`) | przyciski typu "Moje konto" | stały kolor tekstu na hover | domyślnie `text-muted-foreground`, hover → `text-secondary-foreground` — jak `.btn-ghost` |
+| `src/app/page.tsx:39`, `src/app/konto/page.tsx:46` | klikalne karty usług | `hover:bg-muted` | obramowanie → `border-primary` + cień — jak `.card--klikalna` |
+| `src/app/book/BookingFlow.tsx:229` | komórki slotów/dni w kalendarzu | `hover:bg-muted` | obramowanie/tekst → `secondary-foreground` (indygo) — jak `.slot`/`.dzien` |
+| `src/app/book/BookingFlow.tsx:180,187,195` | strzałki nawigacji dat | `hover:bg-muted` | jw. |
+| `src/app/book/BookingFlow.tsx:290` | wiersz istniejącej rezerwacji | `hover:bg-muted` | delikatny tint indygo — jak `.wpis` |
+
+Poza zakresem: elementy referencji bez odpowiednika w tym kodzie
+(`.slupek` — wykresy, `.tabela` — panel koordynatora, `.link-kryzys`,
+`.pasek-demo__*` — pasek demo ról) — nie projektujemy pod komponenty,
+których jeszcze nie ma w aplikacji.
+
 ## Testowanie
 
 `next dev` + wizualna weryfikacja strony głównej, `/book`, `/panel`
 (jasny motyw); tryb ciemny weryfikowany ręcznym dodaniem klasy `.dark` w
 devtoolsach (aplikacja nie ma jeszcze widocznego przełącznika).
+
+Stany hover: ręczne najechanie myszą na każdy element z tabeli wyżej,
+w jasnym i ciemnym motywie.
