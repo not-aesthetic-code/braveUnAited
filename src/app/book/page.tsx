@@ -46,7 +46,10 @@ export default async function BookPage(props: PageProps<"/book">) {
                 })}
               </p>
             </div>
-            <span className="text-sm text-muted-foreground">Rezerwacja wkrótce</span>
+            <div className="text-right">
+              <p className="text-sm font-medium">{slot.price > 0 ? `${slot.price} zł` : "Bezpłatnie"}</p>
+              <p className="text-xs text-muted-foreground">Rezerwacja wkrótce</p>
+            </div>
           </li>
         ))}
       </ul>

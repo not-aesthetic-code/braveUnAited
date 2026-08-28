@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PRICE_BY_SERVICE, SERVICE_LABELS, type ServiceType } from "@/lib/appointments";
+import { priceLabel, SERVICE_LABELS, type ServiceType } from "@/lib/appointments";
 
 const SERVICES = Object.keys(SERVICE_LABELS) as ServiceType[];
 
@@ -25,7 +25,6 @@ export default function Home() {
         <div className="grid w-full max-w-3xl grid-cols-1 gap-3 sm:grid-cols-2">
           {SERVICES.map((service) => {
             const label = SERVICE_LABELS[service];
-            const price = PRICE_BY_SERVICE[service];
             return (
               <Link
                 key={service}
@@ -34,9 +33,7 @@ export default function Home() {
               >
                 <span className="font-medium">{label.title}</span>
                 <span className="text-sm text-muted-foreground">{label.description}</span>
-                <span className="mt-2 text-sm font-semibold">
-                  {price > 0 ? `${price} zł` : "Bezpłatnie"}
-                </span>
+                <span className="mt-2 text-sm font-semibold">{priceLabel(service)}</span>
               </Link>
             );
           })}

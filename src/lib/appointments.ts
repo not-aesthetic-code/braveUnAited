@@ -34,22 +34,34 @@ export type Appointment = {
 export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
+export const MIN_LEAD_HOURS = 2;
 
-export const PRICE_BY_SERVICE: Record<ServiceType, number> = {
+// pełnopłatna has no single price — each specialist picks one of these four
+// fixed rates. Everything else is a flat price.
+export const PELNOPLATNA_RATES = [115, 125, 135, 145] as const;
+
+export const PRICE_BY_SERVICE: Record<Exclude<ServiceType, "pelnoplatna">, number> = {
   niskoplatna: 55,
-  pelnoplatna: 135,
-  adhd_diagnoza: 750,
+  adhd_diagnoza: 350,
   asystent_zdrowienia: 37,
   bezplatna: 0,
 };
 
 export const SERVICE_LABELS: Record<ServiceType, { title: string; description: string }> = {
   niskoplatna: { title: "Konsultacja niskopłatna", description: "Do 10 wizyt na pacjenta" },
-  pelnoplatna: { title: "Konsultacja pełnopłatna", description: "Pełna stawka specjalisty" },
-  adhd_diagnoza: { title: "Diagnoza ADHD", description: "Pełna diagnostyka" },
+  pelnoplatna: { title: "Konsultacja pełnopłatna", description: "Stawka zależna od specjalisty" },
+  adhd_diagnoza: { title: "Diagnoza ADHD", description: "90 minut" },
   asystent_zdrowienia: { title: "Asystent zdrowienia", description: "Wsparcie między sesjami" },
   bezplatna: { title: "Bezpłatna konsultacja", description: "Pierwszy kontakt, bez opłat" },
 };
+
+export function priceLabel(serviceType: ServiceType): string {
+  if (serviceType === "pelnoplatna") {
+    return `${PELNOPLATNA_RATES[0]}–${PELNOPLATNA_RATES[PELNOPLATNA_RATES.length - 1]} zł`;
+  }
+  const price = PRICE_BY_SERVICE[serviceType];
+  return price > 0 ? `${price} zł` : "Bezpłatnie";
+}
 
 const store = new Map<string, Appointment>();
 
@@ -77,6 +89,9 @@ export function holdSlot(input: {
   startsAt: string;
   patientContact: PatientContact;
 }, now = new Date()): Appointment {
+  if (new Date(input.startsAt).getTime() - now.getTime() < MIN_LEAD_HOURS * 3_600_000) {
+    throw new Error(`must book at least ${MIN_LEAD_HOURS}h in advance`);
+  }
   const heldUntil = new Date(now.getTime() + HOLD_MINUTES * 60_000).toISOString();
   const appt: Appointment = {
     id: generateId(),
@@ -86,7 +101,7 @@ export function holdSlot(input: {
     status: "held",
     heldUntil,
     patientContact: input.patientContact,
-    price: PRICE_BY_SERVICE[input.serviceType],
+    price: priceFor(input.serviceType, input.specialistId),
     rescheduleCount: 0,
     paymentStatus: "pending",
   };
@@ -147,15 +162,30 @@ export function rescheduleAppointment(id: string, newStartsAt: string, now = new
 // --- Demo slot search --------------------------------------------------
 
 const SPECIALISTS = [
-  { id: "spec-1", name: "Anna Kowalska", services: ["niskoplatna", "pelnoplatna"] as ServiceType[] },
-  { id: "spec-2", name: "Marek Nowak", services: ["pelnoplatna", "adhd_diagnoza"] as ServiceType[] },
+  { id: "spec-1", name: "Anna Kowalska", services: ["niskoplatna", "pelnoplatna"] as ServiceType[], pelnoplatnaRate: 125 },
+  { id: "spec-2", name: "Marek Nowak", services: ["pelnoplatna", "adhd_diagnoza"] as ServiceType[], pelnoplatnaRate: 145 },
   { id: "spec-3", name: "Ola Wiśniewska", services: ["asystent_zdrowienia", "bezplatna"] as ServiceType[] },
 ];
 
-export type Slot = { specialistId: string; specialistName: string; serviceType: ServiceType; startsAt: string };
+function priceFor(serviceType: ServiceType, specialistId: string): number {
+  if (serviceType === "pelnoplatna") {
+    return SPECIALISTS.find((s) => s.id === specialistId)?.pelnoplatnaRate ?? PELNOPLATNA_RATES[0];
+  }
+  return PRICE_BY_SERVICE[serviceType];
+}
 
-// Hourly 9-17 slots for the next 5 weekdays, minus anything already
-// held/confirmed. Enough to demo search without a real scheduling backend.
+const REGULAR_SLOT_MINUTES = 50;
+const ADHD_SLOT_MINUTES = 90;
+const SLOT_BUFFER_MINUTES = 10;
+const MAX_SLOT_DAYS_AHEAD = 7; // specialists publish availability at most a week out
+const WORK_START_HOUR = 9;
+const WORK_END_HOUR = 17;
+
+export type Slot = { specialistId: string; specialistName: string; serviceType: ServiceType; startsAt: string; price: number };
+
+// Slots are duration + buffer apart (50min sessions, 90min ADHD, 10min buffer
+// between), starting at least MIN_LEAD_HOURS from now — matches the real
+// scheduling constraints, not just an arbitrary hourly grid.
 export function listAvailableSlots(serviceType: ServiceType, now = new Date()): Slot[] {
   const taken = new Set(
     [...store.values()]
@@ -165,18 +195,32 @@ export function listAvailableSlots(serviceType: ServiceType, now = new Date()): 
 
   const slots: Slot[] = [];
   const specialists = SPECIALISTS.filter((s) => s.services.includes(serviceType));
+  const durationMinutes = serviceType === "adhd_diagnoza" ? ADHD_SLOT_MINUTES : REGULAR_SLOT_MINUTES;
+  const minStart = new Date(now.getTime() + MIN_LEAD_HOURS * 3_600_000);
 
-  for (let dayOffset = 1; dayOffset <= 5; dayOffset++) {
+  for (let dayOffset = 0; dayOffset <= MAX_SLOT_DAYS_AHEAD; dayOffset++) {
     const day = new Date(now);
     day.setDate(day.getDate() + dayOffset);
+    const dayEnd = new Date(day);
+    dayEnd.setHours(WORK_END_HOUR, 0, 0, 0);
+
     for (const spec of specialists) {
-      for (let hour = 9; hour < 17; hour++) {
-        const startsAt = new Date(day);
-        startsAt.setHours(hour, 0, 0, 0);
-        const iso = startsAt.toISOString();
-        if (!taken.has(`${spec.id}|${iso}`)) {
-          slots.push({ specialistId: spec.id, specialistName: spec.name, serviceType, startsAt: iso });
+      const cursor = new Date(day);
+      cursor.setHours(WORK_START_HOUR, 0, 0, 0);
+      while (cursor.getTime() + durationMinutes * 60_000 <= dayEnd.getTime()) {
+        if (cursor >= minStart) {
+          const iso = cursor.toISOString();
+          if (!taken.has(`${spec.id}|${iso}`)) {
+            slots.push({
+              specialistId: spec.id,
+              specialistName: spec.name,
+              serviceType,
+              startsAt: iso,
+              price: priceFor(serviceType, spec.id),
+            });
+          }
         }
+        cursor.setMinutes(cursor.getMinutes() + durationMinutes + SLOT_BUFFER_MINUTES);
       }
     }
   }
