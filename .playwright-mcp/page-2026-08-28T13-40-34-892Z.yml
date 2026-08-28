@@ -1,0 +1,96 @@
+- generic [active] [ref=f3e1]:
+  - generic [ref=f3e2]:
+    - generic [ref=f3e3]:
+      - link "← Wróć" [ref=f3e4] [cursor=pointer]:
+        - /url: /
+      - heading "Twoja rezerwacja" [level=1] [ref=f3e5]
+    - generic [ref=f3e6]:
+      - paragraph [ref=f3e7]: Bezpłatna konsultacja
+      - paragraph [ref=f3e8]: poniedziałek, 31 sierpnia 10:00
+      - generic [ref=f3e9]:
+        - generic [ref=f3e10]: Potwierdzona
+        - generic [ref=f3e11]: "Płatność: Opłacona"
+      - paragraph [ref=f3e12]: Bezpłatnie
+    - generic [ref=f3e13]:
+      - paragraph [ref=f3e14]: Link do spotkania
+      - link "https://meet.google.com/anna-kowal-ska" [ref=f3e15] [cursor=pointer]:
+        - /url: https://meet.google.com/anna-kowal-ska
+    - paragraph [ref=f3e16]: Możesz jeszcze bezpłatnie zmienić lub odwołać — masz na to czas do 30 sierpnia 10:00.
+    - generic [ref=f3e17]:
+      - paragraph [ref=f3e18]: Przełóż termin
+      - paragraph [ref=f3e19]: Zmienia się tylko godzina — specjalista, cena i forma wizyty zostają bez zmian.
+      - paragraph [ref=f3e20]: Zmiana 1 z 2 dozwolonych dla tej rezerwacji.
+      - generic [ref=f3e21]:
+        - generic [ref=f3e24]:
+          - generic [ref=f3e25]:
+            - generic [ref=f3e26]:
+              - button "Poprzedni miesiąc" [ref=f3e27]: ‹
+              - paragraph [ref=f3e28]: sierpień 2026
+              - button "Następny miesiąc" [ref=f3e29]: ›
+            - generic [ref=f3e30]:
+              - generic [ref=f3e31]: Pon
+              - generic [ref=f3e32]: Wt
+              - generic [ref=f3e33]: Śr
+              - generic [ref=f3e34]: Czw
+              - generic [ref=f3e35]: Pt
+              - generic [ref=f3e36]: Sob
+              - generic [ref=f3e37]: Nd
+            - generic [ref=f3e38]:
+              - button "27" [disabled] [ref=f3e39]
+              - button "28" [disabled] [ref=f3e40]
+              - button "29" [disabled] [ref=f3e41]
+              - button "30" [disabled] [ref=f3e42]
+              - button "31" [disabled] [ref=f3e43]
+              - button "1" [disabled] [ref=f3e44]
+              - button "2" [disabled] [ref=f3e45]
+              - button "3" [disabled] [ref=f3e46]
+              - button "4" [disabled] [ref=f3e47]
+              - button "5" [disabled] [ref=f3e48]
+              - button "6" [disabled] [ref=f3e49]
+              - button "7" [disabled] [ref=f3e50]
+              - button "8" [disabled] [ref=f3e51]
+              - button "9" [disabled] [ref=f3e52]
+              - button "10" [disabled] [ref=f3e53]
+              - button "11" [disabled] [ref=f3e54]
+              - button "12" [disabled] [ref=f3e55]
+              - button "13" [disabled] [ref=f3e56]
+              - button "14" [disabled] [ref=f3e57]
+              - button "15" [disabled] [ref=f3e58]
+              - button "16" [disabled] [ref=f3e59]
+              - button "17" [disabled] [ref=f3e60]
+              - button "18" [disabled] [ref=f3e61]
+              - button "19" [disabled] [ref=f3e62]
+              - button "20" [disabled] [ref=f3e63]
+              - button "21" [disabled] [ref=f3e64]
+              - button "22" [disabled] [ref=f3e65]
+              - button "23" [disabled] [ref=f3e66]
+              - button "24" [disabled] [ref=f3e67]
+              - button "25" [disabled] [ref=f3e68]
+              - button "26" [disabled] [ref=f3e69]
+              - button "27" [disabled] [ref=f3e70]
+              - button "28" [disabled] [ref=f3e71]
+              - button "29" [disabled] [ref=f3e72]
+              - button "30" [disabled] [ref=f3e73]
+              - button "31" [disabled] [ref=f3e74]
+              - button "1" [disabled] [ref=f3e75]
+              - button "2" [disabled] [ref=f3e76]
+              - button "3" [disabled] [ref=f3e77]
+              - button "4" [disabled] [ref=f3e78]
+              - button "5" [disabled] [ref=f3e79]
+              - button "6" [disabled] [ref=f3e80]
+          - paragraph [ref=f3e82]: Brak wolnych godzin.
+          - paragraph [ref=f3e84]: Wybierz dzień i godzinę, żeby zobaczyć dostępnych specjalistów.
+        - button "Wybierz nowy termin" [disabled]
+    - generic [ref=f3e85]:
+      - paragraph [ref=f3e86]: Odwołaj wizytę
+      - paragraph [ref=f3e87]: Do wizyty zostało 66 godz. — to więcej niż 24, więc wraca cała kwota. Termin natychmiast zwalnia się dla innych pacjentów.
+      - generic [ref=f3e88]:
+        - generic [ref=f3e89]: Powód (nieobowiązkowo)
+        - combobox "Powód (nieobowiązkowo)" [ref=f3e90]:
+          - option "Nie podaję powodu" [selected]
+          - option "Choroba"
+          - option "Kolizja z obowiązkami"
+          - option "Nie potrzebuję już wizyty"
+        - paragraph [ref=f3e91]: Powód trafia do zbiorczych statystyk fundacji; specjalista zobaczy go tylko przy tej wizycie.
+      - button "Odwołaj wizytę" [ref=f3e92]
+  - button "Open Next.js Dev Tools" [ref=f3e98] [cursor=pointer]

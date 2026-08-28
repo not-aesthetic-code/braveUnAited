@@ -1,0 +1,24 @@
+- generic [active] [ref=f1e1]:
+  - generic [ref=f1e2]:
+    - generic [ref=f1e3]:
+      - link "← Wróć" [ref=f1e4] [cursor=pointer]:
+        - /url: /
+      - heading "Twoja rezerwacja" [level=1] [ref=f1e5]
+    - generic [ref=f1e6]:
+      - paragraph [ref=f1e7]: Diagnoza ADHD
+      - paragraph [ref=f1e8]: sobota, 29 sierpnia 14:00
+      - generic [ref=f1e9]:
+        - generic [ref=f1e10]: Potwierdzona
+        - generic [ref=f1e11]: "Płatność: Opłacona"
+      - paragraph [ref=f1e12]: 350 zł
+    - generic [ref=f1e13]:
+      - paragraph [ref=f1e14]: Link do spotkania
+      - link "https://meet.google.com/anna-kowal-ska" [ref=f1e15] [cursor=pointer]:
+        - /url: https://meet.google.com/anna-kowal-ska
+    - generic [ref=f1e16]:
+      - paragraph [ref=f1e17]: Minął czas na bezpłatną zmianę. Wizyta jest płatna niezależnie od obecności. Decyzję o wyjątku podejmuje specjalista, nie system — napisz do niego bezpośrednio.
+      - link [ref=f1e18] [cursor=pointer]:
+        - /url: mailto:anna.kowalska@example.com?subject=Wizyta%2029.08.2026%2C%2014%3A00%3A00
+        - button "Napisz do specjalisty" [ref=f1e19]
+  - button "Open Next.js Dev Tools" [ref=f1e25] [cursor=pointer]
+  - alert [ref=f1e29]
