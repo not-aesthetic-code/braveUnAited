@@ -17,6 +17,15 @@ export const SERVICE_TYPES = [
 ] as const;
 export type ServiceType = (typeof SERVICE_TYPES)[number];
 
+// Services a practitioner manages on the "Moje kalendarze" screen.
+// BASE ones are visible and toggleable for every practitioner from day one.
+// GRANTABLE ones only become visible/toggleable once the foundation creates
+// a practitioner_services row for that practitioner — until then the screen
+// shows them locked. bezplatna sits outside both: every practitioner already
+// offers it and no screen manages it.
+export const BASE_SERVICE_TYPES = ["niskoplatna", "pelnoplatna"] as const;
+export const GRANTABLE_SERVICE_TYPES = ["adhd_diagnoza", "asystent_zdrowienia"] as const;
+
 export type AppointmentStatus =
   | "held"
   | "confirmed"
@@ -26,6 +35,11 @@ export type AppointmentStatus =
 
 export type PatientContact = { name: string; email: string; phone: string };
 
+// Foundation-set delivery mode. Lives on the service, not per-practitioner —
+// same posture as durationMinutes/basePrice, and like those, not editable
+// from any screen yet.
+export type LocationMode = "online" | "stacjonarnie";
+
 export type Service = {
   id: ServiceType;
   title: string;
@@ -33,12 +47,21 @@ export type Service = {
   durationMinutes: number;
   bufferMinutes: number;
   basePrice: number | null; // null = variable, priced per practitioner (pelnoplatna)
+  locationMode: LocationMode;
 };
+
+// The four fixed rates a practitioner may choose for their own pełnopłatna
+// consultations — the one price the foundation lets them set themselves.
+export const PELNOPLATNA_RATE_OPTIONS = [115, 125, 135, 145] as const;
+export type PelnoplatnaRate = (typeof PELNOPLATNA_RATE_OPTIONS)[number];
 
 export type Practitioner = {
   id: string;
   name: string;
-  services: { serviceId: ServiceType; priceOverride: number | null }[];
+  // A row here means the foundation has granted this practitioner the
+  // service; isAccepting is the practitioner's own pause/resume toggle on
+  // top of that grant (see practitioner_services.is_accepting).
+  services: { serviceId: ServiceType; priceOverride: number | null; isAccepting: boolean }[];
   meetingInfo: string | null; // video link or address, shown on confirmation
   email: string | null; // contact for "write to specialist" once the free-cancellation window has passed
 };
@@ -104,6 +127,7 @@ type ServiceRow = {
   duration_minutes: number;
   buffer_minutes: number;
   base_price: number | null;
+  location_mode: LocationMode;
 };
 
 function fromServiceRow(r: ServiceRow): Service {
@@ -114,6 +138,7 @@ function fromServiceRow(r: ServiceRow): Service {
     durationMinutes: r.duration_minutes,
     bufferMinutes: r.buffer_minutes,
     basePrice: r.base_price,
+    locationMode: r.location_mode,
   };
 }
 
@@ -643,6 +668,9 @@ export async function listServicesWithPricing(): Promise<{ service: Service; pri
     if (service.basePrice !== null) {
       return { service, priceLabel: service.basePrice > 0 ? `${service.basePrice} zł` : "Bezpłatnie" };
     }
+    // Deliberately not filtered by isAccepting: a practitioner who paused a
+    // service still offers it and their chosen rate should count — this is
+    // a landing-page price range, not a booking-eligibility check.
     const overrides = practitioners
       .flatMap((p) => p.services)
       .filter((s) => s.serviceId === service.id && s.priceOverride != null)
@@ -661,7 +689,7 @@ type PractitionerRow = {
   name: string;
   meeting_info: string | null;
   email: string | null;
-  practitioner_services: { service_id: ServiceType; price_override: number | null }[];
+  practitioner_services: { service_id: ServiceType; price_override: number | null; is_accepting: boolean }[];
 };
 
 function fromPractitionerRow(r: PractitionerRow): Practitioner {
@@ -670,11 +698,16 @@ function fromPractitionerRow(r: PractitionerRow): Practitioner {
     name: r.name,
     meetingInfo: r.meeting_info,
     email: r.email,
-    services: (r.practitioner_services ?? []).map((ps) => ({ serviceId: ps.service_id, priceOverride: ps.price_override })),
+    services: (r.practitioner_services ?? []).map((ps) => ({
+      serviceId: ps.service_id,
+      priceOverride: ps.price_override,
+      isAccepting: ps.is_accepting,
+    })),
   };
 }
 
-const PRACTITIONER_SELECT = "id, name, meeting_info, email, practitioner_services(service_id, price_override)";
+const PRACTITIONER_SELECT =
+  "id, name, meeting_info, email, practitioner_services(service_id, price_override, is_accepting)";
 
 export async function getPractitioners(): Promise<Practitioner[]> {
   const { data, error } = await db().from("practitioners").select(PRACTITIONER_SELECT);
@@ -866,7 +899,9 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
     });
 
   const slots: Slot[] = [];
-  const eligible = practitioners.filter((p) => p.services.some((s) => s.serviceId === serviceType));
+  const eligible = practitioners.filter((p) =>
+    p.services.some((s) => s.serviceId === serviceType && s.isAccepting)
+  );
   const stepMinutes = service.durationMinutes + service.bufferMinutes;
   const minStart = new Date(now.getTime() + MIN_LEAD_HOURS * 3_600_000).getTime();
 
@@ -985,6 +1020,145 @@ export async function replaceWeeklyAvailability(
     }))
   );
   if (insertError) throw insertError;
+}
+
+// --- Practitioner-facing enabled services (/panel/kalendarze) -------------
+// "Moje kalendarze" is UI wording only — under the hood this is just which
+// services (BASE_SERVICE_TYPES + GRANTABLE_SERVICE_TYPES) a practitioner has
+// enabled and whether they're currently accepting each one. Deliberately not
+// called "availability" — that word is already calendar_availability, a
+// different concept (the hours within an enabled service, not the service
+// itself). Hours are still edited on /panel/dostepnosc (pełnopłatna/
+// niskopłatna only, for now); this screen only reads a summary of them.
+
+const MANAGED_SERVICE_TYPES: readonly ServiceType[] = [...BASE_SERVICE_TYPES, ...GRANTABLE_SERVICE_TYPES];
+
+// Same shape as getWeeklyAvailability, generalized to an arbitrary set of
+// service ids instead of the hardcoded pełnopłatna/niskopłatna pair — kept
+// as a separate function rather than reusing getWeeklyAvailability so this
+// screen doesn't depend on (or need to touch) ManagedAvailabilityService.
+export async function getWeeklyHoursSummary(
+  practitionerId: string,
+  serviceIds: readonly ServiceType[]
+): Promise<Record<ServiceType, WeeklyAvailabilityRange[]>> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_availability")
+    .select("id, service_id, day_of_week, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .in("service_id", serviceIds)
+    .order("day_of_week")
+    .order("start_time");
+  if (error) throw error;
+
+  const result = Object.fromEntries(serviceIds.map((id) => [id, [] as WeeklyAvailabilityRange[]])) as Record<
+    ServiceType,
+    WeeklyAvailabilityRange[]
+  >;
+  for (const row of (data ?? []) as {
+    id: string;
+    service_id: ServiceType;
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+  }[]) {
+    result[row.service_id]?.push({
+      id: row.id,
+      dayOfWeek: row.day_of_week,
+      startTime: row.start_time.slice(0, 5),
+      endTime: row.end_time.slice(0, 5),
+    });
+  }
+  return result;
+}
+
+export type ManagedServiceCard = {
+  service: Service;
+  hasGrant: boolean; // a practitioner_services row exists — the foundation granted this service
+  isAccepting: boolean;
+  priceOverride: number | null;
+  hours: WeeklyAvailabilityRange[];
+};
+
+export async function getManagedServiceCards(practitionerId: string): Promise<ManagedServiceCard[]> {
+  const [services, practitioner, hours] = await Promise.all([
+    getServices(),
+    getPractitioner(practitionerId),
+    getWeeklyHoursSummary(practitionerId, MANAGED_SERVICE_TYPES),
+  ]);
+
+  const grantById = new Map((practitioner?.services ?? []).map((s) => [s.serviceId, s]));
+
+  return MANAGED_SERVICE_TYPES.map((id) => {
+    const service = services.find((s) => s.id === id);
+    if (!service) throw new Error(`Brak usługi "${id}" w katalogu.`);
+    const grant = grantById.get(id);
+    return {
+      service,
+      hasGrant: grant !== undefined,
+      isAccepting: grant?.isAccepting ?? false,
+      priceOverride: grant?.priceOverride ?? null,
+      hours: hours[id] ?? [],
+    };
+  });
+}
+
+// Toggles the practitioner's own pause/resume state for a service. For a
+// GRANTABLE service this requires an existing grant (a practitioner_services
+// row created by the foundation) — the UI never renders this toggle for an
+// ungranted service, but the check lives here too since this is the only
+// place that can actually create bookable eligibility.
+export async function setServiceAccepting(
+  practitionerId: string,
+  serviceId: ServiceType,
+  isAccepting: boolean
+): Promise<void> {
+  if ((GRANTABLE_SERVICE_TYPES as readonly ServiceType[]).includes(serviceId)) {
+    const { data: existing, error: selectError } = await db()
+      .from("practitioner_services")
+      .select("service_id")
+      .eq("practitioner_id", practitionerId)
+      .eq("service_id", serviceId)
+      .maybeSingle();
+    if (selectError) throw selectError;
+    if (!existing) throw new Error("Ta usługa wymaga zgody koordynatora fundacji.");
+  }
+
+  const { error } = await db()
+    .from("practitioner_services")
+    .upsert(
+      { practitioner_id: practitionerId, service_id: serviceId, is_accepting: isAccepting },
+      { onConflict: "practitioner_id,service_id" }
+    );
+  if (error) throw error;
+}
+
+// Sets the practitioner's chosen pełnopłatna rate. Reads is_accepting first
+// and re-writes it unchanged — an upsert that omitted the column would
+// otherwise fall back to its true default on a brand-new row, silently
+// making the practitioner bookable just because they picked a price before
+// ever touching the accept toggle.
+export async function setPelnoplatnaRate(practitionerId: string, rate: PelnoplatnaRate): Promise<void> {
+  const { data: existing, error: selectError } = await db()
+    .from("practitioner_services")
+    .select("is_accepting")
+    .eq("practitioner_id", practitionerId)
+    .eq("service_id", "pelnoplatna")
+    .maybeSingle();
+  if (selectError) throw selectError;
+
+  const { error } = await db()
+    .from("practitioner_services")
+    .upsert(
+      {
+        practitioner_id: practitionerId,
+        service_id: "pelnoplatna",
+        price_override: rate,
+        is_accepting: (existing as { is_accepting: boolean } | null)?.is_accepting ?? false,
+      },
+      { onConflict: "practitioner_id,service_id" }
+    );
+  if (error) throw error;
 }
 
 // --- Hour overrides (/panel/dostepnosc, step 2) ---------------------------
