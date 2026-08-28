@@ -304,6 +304,56 @@ export async function getAppointmentsForPractitioner(
   return Promise.all(((data ?? []) as Row[]).map((r) => expireIfStale(fromRow(r), now)));
 }
 
+export const REMINDER_AFTER_WEEKS = 6;
+
+export type ReminderCandidate = {
+  patient: { id: string; name: string; email: string; phone: string };
+  lastVisitAt: string; // ISO — most recent confirmed appointment in the past
+};
+
+// Patients a practitioner should reach out to: their most recent confirmed
+// appointment was REMINDER_AFTER_WEEKS+ ago, and they have nothing booked
+// since. Outreach itself is manual (call/SMS) — same "stub the delivery,
+// build the real logic" pattern as confirmPayment() before Stripe landed —
+// this just surfaces who to call.
+export async function getPatientsToRemind(
+  practitionerId: string,
+  now = new Date()
+): Promise<ReminderCandidate[]> {
+  const { data, error } = await db()
+    .from("appointments")
+    .select(APPOINTMENT_SELECT)
+    .eq("practitioner_id", practitionerId)
+    .eq("status", "confirmed")
+    .order("starts_at", { ascending: false });
+  if (error) throw error;
+
+  const appts = ((data ?? []) as Row[]).map(fromRow);
+  const nowMs = now.getTime();
+  const cutoffMs = nowMs - REMINDER_AFTER_WEEKS * 7 * 86_400_000;
+
+  // Rows are ordered newest-first, so the first past appointment seen per
+  // patient is their most recent one.
+  const lastPastVisit = new Map<string, Appointment>();
+  const hasUpcoming = new Set<string>();
+  for (const appt of appts) {
+    if (new Date(appt.startsAt).getTime() >= nowMs) {
+      hasUpcoming.add(appt.patientId);
+    } else if (!lastPastVisit.has(appt.patientId)) {
+      lastPastVisit.set(appt.patientId, appt);
+    }
+  }
+
+  const candidates: ReminderCandidate[] = [];
+  for (const [patientId, appt] of lastPastVisit) {
+    if (hasUpcoming.has(patientId)) continue;
+    if (new Date(appt.startsAt).getTime() <= cutoffMs) {
+      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt });
+    }
+  }
+  return candidates.sort((a, b) => a.lastVisitAt.localeCompare(b.lastVisitAt));
+}
+
 // Optional patient account (/konto) — matched by email via Supabase Auth
 // magic link, separate from the phone-keyed identity booking uses. A patient
 // row's email can be unset (phone-only guest), so this can legitimately

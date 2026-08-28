@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { getAppointmentsForPractitioner } from "@/lib/appointments";
+import { getAppointmentsForPractitioner, getPatientsToRemind, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 import { logoutAction } from "./actions";
 
@@ -24,19 +24,48 @@ export default async function DoctorPanelPage() {
 
   if (!claims || !practitionerId) redirect("/panel/login");
 
-  const appointments = await getAppointmentsForPractitioner(practitionerId);
+  const [appointments, reminders] = await Promise.all([
+    getAppointmentsForPractitioner(practitionerId),
+    getPatientsToRemind(practitionerId),
+  ]);
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 px-6 py-16">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Twoje wizyty</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Panel specjalisty</h1>
           <p className="text-sm text-muted-foreground">{claims.email as string}</p>
         </div>
         <form action={logoutAction}>
           <Button type="submit" variant="outline">Wyloguj</Button>
         </form>
       </div>
+
+      {reminders.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h2 className="text-lg font-semibold tracking-tight">
+            Warto przypomnieć o wizycie ({REMINDER_AFTER_WEEKS}+ tyg. bez kontaktu)
+          </h2>
+          {reminders.map((r) => (
+            <div key={r.patient.id} className="rounded-xl border bg-card p-5">
+              <div className="flex items-center justify-between">
+                <p className="font-medium">{r.patient.name}</p>
+                <p className="text-sm text-muted-foreground">{r.patient.phone}</p>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Ostatnia wizyta:{" "}
+                {new Date(r.lastVisitAt).toLocaleDateString("pl-PL", {
+                  day: "numeric",
+                  month: "long",
+                  year: "numeric",
+                })}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h2 className="text-lg font-semibold tracking-tight">Twoje wizyty</h2>
 
       {appointments.length === 0 && (
         <p className="text-muted-foreground">Brak zaplanowanych wizyt.</p>
