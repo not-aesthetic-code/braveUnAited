@@ -63,6 +63,7 @@ export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { sendSms } from "./sms";
 
 // Lazy singleton — a top-level createClient() call would throw at build
 // time before SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are configured.
@@ -223,6 +224,22 @@ export async function holdSlot(input: {
   return fromRow(data as Row);
 }
 
+// Text is fixed and holds no service name or health-related wording (see
+// plan.md's business rules — "no service name, no health-related words"),
+// since an SMS can be read by anyone with the patient's phone in hand. Also
+// avoids Polish diacritics: they'd force UCS-2 encoding and cut the single-
+// segment budget from 160 chars to 70 ("character-limited (segment cost)").
+export function buildConfirmationSmsText(startsAt: string, meetingInfo: string | null): string {
+  const when = new Date(startsAt).toLocaleString("pl-PL", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const info = meetingInfo ? `${meetingInfo}. ` : "";
+  return `Niepodzielni: potwierdzamy wizyte ${when}. ${info}Pytania? Zadzwon do nas.`;
+}
+
 export async function confirmPayment(id: string, now = new Date()): Promise<Appointment> {
   const appt = await getAppointment(id, now);
   if (!appt) throw new Error("appointment not found");
@@ -234,7 +251,17 @@ export async function confirmPayment(id: string, now = new Date()): Promise<Appo
     .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
-  return fromRow(data as Row);
+  const confirmed = fromRow(data as Row);
+
+  // ADHD diagnoza is the longest, highest-stakes session in this slice —
+  // send an SMS reminder on top of the confirmation screen. No SMS provider
+  // is wired up yet, so this is a stub (src/lib/sms.ts) same as OTP was.
+  if (confirmed.serviceId === "adhd_diagnoza") {
+    const practitioner = await getPractitioner(confirmed.practitionerId);
+    sendSms(confirmed.patient.phone, buildConfirmationSmsText(confirmed.startsAt, practitioner?.meetingInfo ?? null));
+  }
+
+  return confirmed;
 }
 
 function hoursUntil(appt: Appointment, now: Date): number {
