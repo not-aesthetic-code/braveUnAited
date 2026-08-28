@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { formatDay, formatTime, SlotPicker } from "@/components/slot-picker";
 import { holdSlotAction, startPaymentAction } from "./actions";
 import type { Appointment, Practitioner, Service, ServiceType, Slot } from "@/lib/appointments";
+import { isValidEmail } from "@/lib/email-format";
 
 const ctaClassName = "font-bold tracking-wide uppercase";
 
@@ -45,6 +46,8 @@ export function BookingFlow({
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("+48 ");
   const [email, setEmail] = useState("");
+  // Empty is fine — email is optional — but a non-empty value must look real.
+  const emailInvalid = email !== "" && !isValidEmail(email);
 
   const msLeft = useCountdown(phase === "held" ? appt?.heldUntil : undefined);
   useEffect(() => {
@@ -58,7 +61,7 @@ export function BookingFlow({
   }
 
   function submitHold() {
-    if (!selectedSlot) return;
+    if (!selectedSlot || emailInvalid) return;
     setError(null);
     startTransition(async () => {
       const result = await holdSlotAction({
@@ -159,8 +162,12 @@ export function BookingFlow({
                 onChange={(e) => setEmail(e.target.value)}
                 type="email"
                 placeholder="potwierdzenie i link do spotkania"
+                aria-invalid={emailInvalid}
                 className="h-10"
               />
+              {emailInvalid && (
+                <p className="text-sm text-destructive">Podaj poprawny adres e-mail albo zostaw pole puste.</p>
+              )}
             </Field>
           </div>
           {error && (
@@ -168,7 +175,11 @@ export function BookingFlow({
           )}
           <div className="mt-5 flex gap-2">
             <Button variant="outline" onClick={reset}>Wróć</Button>
-            <Button className={ctaClassName} disabled={!name || !phone || pending} onClick={submitHold}>
+            <Button
+              className={ctaClassName}
+              disabled={!name || !phone || emailInvalid || pending}
+              onClick={submitHold}
+            >
               {pending ? "Trzymam termin…" : "Zarezerwuj termin"}
             </Button>
           </div>
