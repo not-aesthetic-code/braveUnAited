@@ -43,7 +43,7 @@ export default async function PatientAccountPage() {
           <Link
             key={appt.id}
             href={`/my-booking/${appt.id}`}
-            className="rounded-xl border bg-card p-5 transition-colors hover:bg-secondary/40"
+            className="rounded-xl border bg-card p-5 transition-colors hover:bg-secondary"
           >
             <p className="font-medium">{appt.service.title}</p>
             <p className="text-sm text-muted-foreground">
