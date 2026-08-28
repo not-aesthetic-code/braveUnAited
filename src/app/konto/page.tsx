@@ -1,17 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/status-badge";
 import { getAppointmentsForPatientEmail } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 import { logoutAction } from "./actions";
-
-const STATUS_LABEL: Record<string, string> = {
-  held: "Oczekuje na płatność",
-  confirmed: "Potwierdzona",
-  cancelled: "Odwołana",
-  completed: "Odbyta",
-  no_show: "Nieobecność",
-};
 
 export default async function PatientAccountPage() {
   const supabase = await createClient();
@@ -55,9 +48,9 @@ export default async function PatientAccountPage() {
                 minute: "2-digit",
               })}
             </p>
-            <span className="mt-2 inline-block text-sm">
-              Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span>
-            </span>
+            <div className="mt-2">
+              <StatusBadge status={appt.status} />
+            </div>
           </Link>
         ))}
       </div>

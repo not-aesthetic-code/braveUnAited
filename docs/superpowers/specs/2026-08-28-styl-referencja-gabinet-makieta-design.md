@@ -1,7 +1,7 @@
 # Dopasowanie stylu do referencji `gabinet-makieta` — design (bounded)
 
 Data: 2026-08-28
-Status: zaakceptowany, wdrożenie w toku
+Status: wdrożone (gałąź `style/gabinet-makieta-reference`), oczekuje na PR/merge do `main`
 
 ## Cel
 
