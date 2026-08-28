@@ -1,16 +1,9 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/status-badge";
 import { getAppointmentsForPractitioner, getPatientsToRemind, REMINDER_AFTER_WEEKS } from "@/lib/appointments";
 import { createClient } from "@/lib/supabase/server";
 import { logoutAction } from "./actions";
-
-const STATUS_LABEL: Record<string, string> = {
-  held: "Oczekuje na płatność",
-  confirmed: "Potwierdzona",
-  cancelled: "Odwołana",
-  completed: "Odbyta",
-  no_show: "Nieobecność",
-};
 
 export default async function DoctorPanelPage() {
   const supabase = await createClient();
@@ -84,8 +77,8 @@ export default async function DoctorPanelPage() {
                 minute: "2-digit",
               })}
             </p>
-            <div className="mt-3 flex gap-4 text-sm">
-              <span>Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span></span>
+            <div className="mt-3 flex items-center gap-4 text-sm">
+              <StatusBadge status={appt.status} />
               <span>Pacjent: <span className="font-medium">{appt.patient.name}</span></span>
             </div>
           </div>

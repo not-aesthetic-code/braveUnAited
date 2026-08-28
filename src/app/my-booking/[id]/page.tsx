@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/components/status-badge";
 import { canManage, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
@@ -14,14 +15,6 @@ function isUrl(value: string): boolean {
     return false;
   }
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  held: "Oczekuje na płatność",
-  confirmed: "Potwierdzona",
-  cancelled: "Odwołana",
-  completed: "Odbyta",
-  no_show: "Nieobecność",
-};
 
 const PAYMENT_LABEL: Record<string, string> = {
   pending: "Nieopłacona",
@@ -85,8 +78,8 @@ export default async function ManageBookingPage({
             minute: "2-digit",
           })}
         </p>
-        <div className="mt-3 flex gap-4 text-sm">
-          <span>Status: <span className="font-medium">{STATUS_LABEL[appt.status]}</span></span>
+        <div className="mt-3 flex items-center gap-4 text-sm">
+          <StatusBadge status={appt.status} />
           <span>Płatność: <span className="font-medium">{PAYMENT_LABEL[appt.paymentStatus]}</span></span>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">

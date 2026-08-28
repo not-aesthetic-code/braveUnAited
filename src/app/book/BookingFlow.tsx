@@ -311,7 +311,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Imię i nazwisko"
-              className="rounded-md border bg-background px-3 py-2 text-sm"
+              className="rounded-md border bg-background px-3 py-2 text-sm outline-none transition-colors hover:border-secondary-foreground/50 focus:border-secondary-foreground focus:ring-3 focus:ring-secondary-foreground/15"
             />
             <input
               value={phone}
@@ -319,14 +319,14 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               placeholder="Telefon (wymagany)"
               type="tel"
               required
-              className="rounded-md border bg-background px-3 py-2 text-sm"
+              className="rounded-md border bg-background px-3 py-2 text-sm outline-none transition-colors hover:border-secondary-foreground/50 focus:border-secondary-foreground focus:ring-3 focus:ring-secondary-foreground/15"
             />
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="E-mail (opcjonalnie — potwierdzenie i link do spotkania)"
               type="email"
-              className="rounded-md border bg-background px-3 py-2 text-sm"
+              className="rounded-md border bg-background px-3 py-2 text-sm outline-none transition-colors hover:border-secondary-foreground/50 focus:border-secondary-foreground focus:ring-3 focus:ring-secondary-foreground/15"
             />
           </div>
           {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
