@@ -43,7 +43,7 @@ export function BookingFlow({
   const [pending, startTransition] = useTransition();
 
   const [name, setName] = useState("");
-  const [phone, setPhone] = useState("+48 ");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
 
   const msLeft = useCountdown(phase === "held" ? appt?.heldUntil : undefined);

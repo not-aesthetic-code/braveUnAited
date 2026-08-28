@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { RescheduleCalendar } from "@/components/reschedule-calendar";
+import { PractitionerRescheduleTimes } from "@/components/practitioner-reschedule-times";
 import {
   type Appointment,
   getAppointmentsForPractitioner,
@@ -72,7 +72,7 @@ function AppointmentRow({
 
       {appt.status === "confirmed" && (
         <div className="mt-4 flex flex-col gap-3 border-t pt-4">
-          <RescheduleCalendar slots={slots} action={reschedulePractitionerBookingAction.bind(null, appt.id)} />
+          <PractitionerRescheduleTimes slots={slots} action={reschedulePractitionerBookingAction.bind(null, appt.id)} />
           <form action={cancelPractitionerBookingAction.bind(null, appt.id)}>
             <Button type="submit" variant="destructive" size="sm">Odwołaj</Button>
           </form>

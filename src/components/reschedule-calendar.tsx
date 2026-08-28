@@ -7,8 +7,9 @@ import type { Slot } from "@/lib/appointments";
 
 // The reschedule counterpart to BookingFlow's calendar: same SlotPicker, just
 // wired to submit a single "newStartsAt" field instead of running the full
-// hold → pay flow. Used by both the patient (/my-booking) and practitioner
-// (/panel) reschedule forms, in place of a plain <select> of formatted times.
+// hold → pay flow. Patient-facing only (/my-booking) — the practitioner
+// reschedule flow uses the simpler PractitionerRescheduleTimes instead, since
+// there's no need to browse months or pick a specialist there.
 export function RescheduleCalendar({
   slots,
   action,
