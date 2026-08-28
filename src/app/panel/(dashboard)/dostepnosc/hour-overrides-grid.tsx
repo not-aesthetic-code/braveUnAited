@@ -362,13 +362,7 @@ function ServiceGrid({
 
       {notice && <CrossServiceNotice notice={notice} onDismiss={onDismissNotice} />}
 
-      <p className="rounded-lg border-l-2 border-secondary-foreground bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
-        <strong className="block text-secondary-foreground">Poprawki są jednorazowe i dotyczą jednej usługi</strong>
-        Wyłączenie godziny obowiązuje tylko tego konkretnego dnia i tylko w tej zakładce — ta sama godzina w drugim
-        rodzaju konsultacji zostaje otwarta. Jeśli chcesz zmienić coś na stałe, popraw rytm tygodniowy powyżej, bo
-        inaczej za tydzień wróci to samo. Wizyta umówiona przez pacjenta zamyka godzinę we wszystkich usługach naraz —
-        kalendarz jest jeden. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać terminy.
-      </p>
+      <HowItWorksNote />
     </div>
   );
 }
@@ -376,6 +370,38 @@ function ServiceGrid({
 // Hand-rolled rather than @/components/ui/dialog: that wrapper is currently
 // unused anywhere in the app and its Base UI portal does not mount when the
 // dialog is driven by an `open` prop, so a click produced no visible panel.
+/**
+ * Explains the two things the grid itself cannot show: that a correction is
+ * scoped to one day and one service, and that a patient's booking is not.
+ * Dismissable, because it is a primer — once read it only takes up room. It
+ * comes back on the next load rather than being remembered, so nobody loses
+ * the explanation for good.
+ */
+function HowItWorksNote() {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+
+  return (
+    <div className="flex items-start gap-3 rounded-lg border-l-2 border-secondary-foreground bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
+      <p className="flex-1">
+        <strong className="block text-secondary-foreground">Poprawki są jednorazowe i dotyczą jednej usługi</strong>
+        Wyłączenie godziny obowiązuje tylko tego konkretnego dnia i tylko w tej zakładce — ta sama godzina w drugim
+        rodzaju konsultacji zostaje otwarta. Jeśli chcesz zmienić coś na stałe, popraw rytm tygodniowy powyżej, bo
+        inaczej za tydzień wróci to samo. Wizyta umówiona przez pacjenta zamyka godzinę we wszystkich usługach naraz —
+        kalendarz jest jeden. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać terminy.
+      </p>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        aria-label="Ukryj wyjaśnienie"
+        className="rounded-md p-1 transition-colors hover:bg-secondary"
+      >
+        <XIcon className="size-4" />
+      </button>
+    </div>
+  );
+}
+
 function CrossServiceNotice({ notice, onDismiss }: { notice: CrossServiceNotice; onDismiss: () => void }) {
   const when = new Intl.DateTimeFormat("pl-PL", {
     timeZone: "Europe/Warsaw",
