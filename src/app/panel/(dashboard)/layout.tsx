@@ -29,7 +29,7 @@ const NAV_GROUPS: { label: string; items: { icon: typeof LayoutGrid; label: stri
   {
     label: "Kalendarz",
     items: [
-      { icon: CalendarDays, label: "Moje kalendarze" },
+      { icon: CalendarDays, label: "Moje kalendarze", href: "/panel/kalendarze" },
       { icon: Clock, label: "Dostępność", href: "/panel/dostepnosc" },
     ],
   },

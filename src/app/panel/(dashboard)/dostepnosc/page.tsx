@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation";
 import {
   getAppointmentsForPractitioner,
-  getBookedVisits,
-  getHourOverrides,
-  getService,
-  getWeeklyAvailability,
+  getEnabledServiceIds,
+  getHourGridWeekData,
+  getServices,
+  getWeeklyHoursSummary,
 } from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
 import { startOfWarsawWeek } from "@/lib/therapist-calendar";
@@ -25,25 +25,27 @@ export default async function DostepnoscPage() {
   if (!practitionerId) redirect("/panel/login");
 
   const fromDate = warsawToday();
-  const [availability, pelnoplatna, niskoplatna, appointments, overridesFull, overridesLow, visits] =
-    await Promise.all([
-      getWeeklyAvailability(practitionerId),
-      getService("pelnoplatna"),
-      getService("niskoplatna"),
-      getAppointmentsForPractitioner(practitionerId),
-      getHourOverrides(practitionerId, "pelnoplatna", fromDate),
-      getHourOverrides(practitionerId, "niskoplatna", fromDate),
-      getBookedVisits(practitionerId, fromDate),
-    ]);
+  const enabledIds = await getEnabledServiceIds(practitionerId);
+
+  const [allServices, availability, appointments, { overrides, visits }] = await Promise.all([
+    getServices(),
+    getWeeklyHoursSummary(practitionerId, enabledIds),
+    getAppointmentsForPractitioner(practitionerId),
+    getHourGridWeekData(practitionerId, enabledIds, fromDate),
+  ]);
+
+  const servicesById = new Map(allServices.map((s) => [s.id, s]));
+
+  const enabledServices = enabledIds.map((id) => {
+    const service = servicesById.get(id);
+    if (!service) throw new Error(`Brak usługi "${id}" w katalogu.`);
+    return { service, availability: availability[id] ?? [] };
+  });
 
   const currentWeekStart = startOfWarsawWeek(new Date());
   const lowCostVisitsThisWeek = appointments.filter(
     (a) => a.serviceId === "niskoplatna" && startOfWarsawWeek(new Date(a.startsAt)) === currentWeekStart
   ).length;
-
-  if (!pelnoplatna || !niskoplatna) {
-    throw new Error("Brak zdefiniowanych usług pełnopłatnej lub niskopłatnej w katalogu.");
-  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -54,15 +56,10 @@ export default async function DostepnoscPage() {
       </div>
 
       <WeeklyRhythmEditor
-        initialAvailability={availability}
-        services={{ pelnoplatna, niskoplatna }}
+        enabledServices={enabledServices}
         lowCostVisitsThisWeek={lowCostVisitsThisWeek}
         lowCostVisitsLimit={LOW_COST_WEEKLY_VISIT_LIMIT}
-        hourGrid={{
-          fromDate,
-          overrides: { pelnoplatna: overridesFull, niskoplatna: overridesLow },
-          visits,
-        }}
+        hourGrid={{ fromDate, overrides, visits }}
       />
     </div>
   );

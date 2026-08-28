@@ -149,8 +149,9 @@ export function BookingFlow({
                   onChange={(e) => setPhone(e.target.value)}
                   type="tel"
                   inputMode="numeric"
+                  placeholder="123 456 789"
                   required
-                  className="h-auto border-0 p-0 focus-visible:ring-0"
+                  className="h-full border-0 p-0 focus-visible:ring-0"
                 />
               </div>
             </Field>
