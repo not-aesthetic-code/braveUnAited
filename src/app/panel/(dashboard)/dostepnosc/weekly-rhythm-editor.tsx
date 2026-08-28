@@ -7,9 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
-  ManagedAvailabilityService,
   PanelVisit,
   Service,
+  ServiceType,
   StoredHourOverride,
   WeeklyAvailabilityRange,
 } from "@/lib/appointments";
@@ -28,10 +28,16 @@ const DAYS = [
   { label: "Niedziela", dayOfWeek: 0 },
 ] as const;
 
-const SERVICE_TAB_LABEL: Record<ManagedAvailabilityService, string> = {
+// The mockup spells these two out in plural ("Konsultacje X"), not the
+// catalog's singular service.title ("Konsultacja X") — every other enabled
+// service just uses its catalog title.
+const TAB_LABEL_OVERRIDE: Partial<Record<ServiceType, string>> = {
   pelnoplatna: "Konsultacje pełnopłatne",
   niskoplatna: "Konsultacje niskopłatne",
 };
+function tabLabel(service: Service): string {
+  return TAB_LABEL_OVERRIDE[service.id] ?? service.title;
+}
 
 // Soft floor, informational only — the mockup has no blocking error state
 // for this on either tab. See docs/dostepnosc/01-tygodniowy-rytm.md.
@@ -73,44 +79,46 @@ function totalMinutes(ranges: EditableRange[]): number {
 }
 
 export function WeeklyRhythmEditor({
-  initialAvailability,
-  services,
+  enabledServices,
   lowCostVisitsThisWeek,
   lowCostVisitsLimit,
   hourGrid,
 }: {
-  initialAvailability: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>;
-  services: Record<ManagedAvailabilityService, Service>;
+  // One entry per tab this screen shows, in tab order — see
+  // getEnabledServiceIds in appointments.ts for what "enabled" means.
+  enabledServices: { service: Service; availability: WeeklyAvailabilityRange[] }[];
   lowCostVisitsThisWeek: number;
   lowCostVisitsLimit: number;
   // Step 2 of the same screen. It lives inside these tabs rather than beside
-  // them because the two services keep genuinely separate schedules — a
-  // second tab strip would let you read one service's rhythm against the
-  // other service's grid.
+  // them because each service keeps a genuinely separate schedule — a
+  // second tab strip would let you read one service's rhythm against
+  // another service's grid.
   hourGrid: {
     fromDate: string;
-    overrides: Record<ManagedAvailabilityService, StoredHourOverride[]>;
+    overrides: Partial<Record<ServiceType, StoredHourOverride[]>>;
     visits: PanelVisit[];
   };
 }) {
-  const [activeTab, setActiveTab] = useState<ManagedAvailabilityService>("pelnoplatna");
-  const [ranges, setRanges] = useState<Record<ManagedAvailabilityService, EditableRange[]>>({
-    pelnoplatna: toEditable(initialAvailability.pelnoplatna),
-    niskoplatna: toEditable(initialAvailability.niskoplatna),
-  });
+  const serviceIds = enabledServices.map((e) => e.service.id);
+  const serviceById = new Map(enabledServices.map((e) => [e.service.id, e.service]));
+
+  const [activeTab, setActiveTab] = useState<ServiceType>(serviceIds[0]);
+  const [ranges, setRanges] = useState<Partial<Record<ServiceType, EditableRange[]>>>(() =>
+    Object.fromEntries(enabledServices.map((e) => [e.service.id, toEditable(e.availability)]))
+  );
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  function updateService(serviceId: ManagedAvailabilityService, next: EditableRange[]) {
+  function updateService(serviceId: ServiceType, next: EditableRange[]) {
     setRanges((prev) => ({ ...prev, [serviceId]: next }));
   }
 
   function handleSave() {
     setMessage(null);
 
-    for (const serviceId of ["pelnoplatna", "niskoplatna"] as const) {
+    for (const serviceId of serviceIds) {
       const result = validateWeeklyRanges(
-        ranges[serviceId].map((r) => ({
+        (ranges[serviceId] ?? []).map((r) => ({
           weekday: toIsoWeekday(r.dayOfWeek),
           startTime: r.startTime,
           endTime: r.endTime,
@@ -118,16 +126,20 @@ export function WeeklyRhythmEditor({
       );
       if (!result.ok) {
         setActiveTab(serviceId);
-        setMessage({ kind: "error", text: `${SERVICE_TAB_LABEL[serviceId]}: ${result.error}` });
+        setMessage({ kind: "error", text: `${tabLabel(serviceById.get(serviceId)!)}: ${result.error}` });
         return;
       }
     }
 
     startTransition(async () => {
-      const result = await saveWeeklyAvailabilityAction({
-        pelnoplatna: ranges.pelnoplatna.map(({ dayOfWeek, startTime, endTime }) => ({ dayOfWeek, startTime, endTime })),
-        niskoplatna: ranges.niskoplatna.map(({ dayOfWeek, startTime, endTime }) => ({ dayOfWeek, startTime, endTime })),
-      });
+      const result = await saveWeeklyAvailabilityAction(
+        Object.fromEntries(
+          serviceIds.map((serviceId) => [
+            serviceId,
+            (ranges[serviceId] ?? []).map(({ dayOfWeek, startTime, endTime }) => ({ dayOfWeek, startTime, endTime })),
+          ])
+        )
+      );
       setMessage(
         result.ok ? { kind: "success", text: "Zapisano harmonogram." } : { kind: "error", text: result.error }
       );
@@ -148,39 +160,42 @@ export function WeeklyRhythmEditor({
         </p>
       )}
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ManagedAvailabilityService)}>
-        <TabsList>
-          <TabsTrigger value="pelnoplatna">{SERVICE_TAB_LABEL.pelnoplatna}</TabsTrigger>
-          <TabsTrigger value="niskoplatna">{SERVICE_TAB_LABEL.niskoplatna}</TabsTrigger>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ServiceType)}>
+        <TabsList variant="line">
+          {enabledServices.map(({ service }) => (
+            <TabsTrigger key={service.id} value={service.id}>
+              {tabLabel(service)}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
-        {(["pelnoplatna", "niskoplatna"] as const).map((serviceId) => (
-          <TabsContent key={serviceId} value={serviceId} className="mt-4">
+        {enabledServices.map(({ service }) => (
+          <TabsContent key={service.id} value={service.id} className="mt-4">
             <div className="flex flex-col gap-6">
-              {serviceId === "niskoplatna" && (
+              {service.id === "niskoplatna" && (
                 <LowCostQuotaCard used={lowCostVisitsThisWeek} limit={lowCostVisitsLimit} />
               )}
               <ServiceScheduleCard
-                service={services[serviceId]}
-                ranges={ranges[serviceId]}
-                onChange={(next) => updateService(serviceId, next)}
-                showCommunityMinimumWarning={serviceId === "niskoplatna"}
+                service={service}
+                ranges={ranges[service.id] ?? []}
+                onChange={(next) => updateService(service.id, next)}
+                showCommunityMinimumWarning={service.id === "niskoplatna"}
               />
               <HourOverridesGrid
-                serviceId={serviceId}
+                serviceId={service.id}
                 fromDate={hourGrid.fromDate}
-                rhythm={ranges[serviceId]}
-                overrides={hourGrid.overrides[serviceId]}
+                rhythm={ranges[service.id] ?? []}
+                overrides={hourGrid.overrides[service.id] ?? []}
                 visits={hourGrid.visits}
-                otherServices={(["pelnoplatna", "niskoplatna"] as const)
-                  .filter((other) => other !== serviceId)
+                otherServices={serviceIds
+                  .filter((other) => other !== service.id)
                   .map((other) => ({
-                    label: SERVICE_TAB_LABEL[other],
+                    label: tabLabel(serviceById.get(other)!),
                     // The live editor state, not the saved rows: the warning
                     // has to judge the schedule the practitioner is looking
                     // at right now.
-                    rhythm: ranges[other],
-                    overrides: hourGrid.overrides[other],
+                    rhythm: ranges[other] ?? [],
+                    overrides: hourGrid.overrides[other] ?? [],
                   }))}
               />
             </div>

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { toggleHourOverride, type ManagedAvailabilityService } from "@/lib/appointments";
+import { getEnabledServiceIds, toggleHourOverride, type ServiceType } from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
 
 export type ToggleHourResult = { ok: true } | { ok: false; error: string };
@@ -10,7 +10,7 @@ export type ToggleHourResult = { ok: true } | { ok: false; error: string };
 // from the session, never from the browser, so a posted payload can only
 // ever edit the caller's own calendar.
 export async function toggleHourOverrideAction(input: {
-  serviceId: ManagedAvailabilityService;
+  serviceId: ServiceType;
   date: string;
   hour: number;
   intent: "open" | "closed" | "clear";
@@ -18,7 +18,10 @@ export async function toggleHourOverrideAction(input: {
   const { practitionerId } = await getPractitionerSession();
   if (!practitionerId) return { ok: false, error: "Sesja wygasła — zaloguj się ponownie." };
 
-  if (input.serviceId !== "pelnoplatna" && input.serviceId !== "niskoplatna") {
+  // Re-derived here rather than trusted from the client — the tab set the
+  // browser is showing could be stale (a foundation grant just revoked).
+  const enabled = await getEnabledServiceIds(practitionerId);
+  if (!enabled.includes(input.serviceId)) {
     return { ok: false, error: "Nieznana usługa." };
   }
 

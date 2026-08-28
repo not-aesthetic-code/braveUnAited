@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { TriangleAlertIcon, XIcon } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
-import type { ManagedAvailabilityService, PanelVisit, StoredHourOverride } from "@/lib/appointments";
+import type { PanelVisit, ServiceType, StoredHourOverride } from "@/lib/appointments";
 import {
   buildHourGrid,
   gridDates,
@@ -66,7 +66,7 @@ const PAYMENT_LABEL: Record<string, string> = {
 };
 
 type Props = {
-  serviceId: ManagedAvailabilityService;
+  serviceId: ServiceType;
   fromDate: string;
   /**
    * The rhythm currently shown in the editor above — including edits that

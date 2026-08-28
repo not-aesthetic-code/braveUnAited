@@ -940,11 +940,9 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
 }
 
 // --- Practitioner-facing weekly rhythm editor (/panel/dostepnosc) ---------
-
-// The two service tabs this screen manages. adhd_diagnoza/asystent_zdrowienia/
-// bezplatna keep whatever calendar_availability rows they already have —
-// no screen edits them yet.
-export type ManagedAvailabilityService = "pelnoplatna" | "niskoplatna";
+// Which service tabs this screen shows is driven by enabled services (see
+// getEnabledServiceIds below) — every service in that list gets a tab, not
+// just pełnopłatna/niskopłatna.
 
 export type WeeklyAvailabilityRange = {
   id: string;
@@ -963,46 +961,12 @@ async function getCalendarId(practitionerId: string): Promise<string> {
   return data.id as string;
 }
 
-export async function getWeeklyAvailability(
-  practitionerId: string
-): Promise<Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>> {
-  const calendarId = await getCalendarId(practitionerId);
-  const { data, error } = await db()
-    .from("calendar_availability")
-    .select("id, service_id, day_of_week, start_time, end_time")
-    .eq("calendar_id", calendarId)
-    .in("service_id", ["pelnoplatna", "niskoplatna"])
-    .order("day_of_week")
-    .order("start_time");
-  if (error) throw error;
-
-  const result: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]> = {
-    pelnoplatna: [],
-    niskoplatna: [],
-  };
-  for (const row of (data ?? []) as {
-    id: string;
-    service_id: ManagedAvailabilityService;
-    day_of_week: number;
-    start_time: string;
-    end_time: string;
-  }[]) {
-    result[row.service_id].push({
-      id: row.id,
-      dayOfWeek: row.day_of_week,
-      startTime: row.start_time.slice(0, 5),
-      endTime: row.end_time.slice(0, 5),
-    });
-  }
-  return result;
-}
-
 // Replace-all for one practitioner's one service tab. Not a single DB
 // transaction (delete then insert as two calls) — acceptable here since this
 // is a low-traffic admin screen with no concurrent writers per calendar.
 export async function replaceWeeklyAvailability(
   practitionerId: string,
-  serviceId: ManagedAvailabilityService,
+  serviceId: ServiceType,
   ranges: { dayOfWeek: number; startTime: string; endTime: string }[]
 ): Promise<void> {
   const calendarId = await getCalendarId(practitionerId);
@@ -1034,15 +998,22 @@ export async function replaceWeeklyAvailability(
 // enabled and whether they're currently accepting each one. Deliberately not
 // called "availability" — that word is already calendar_availability, a
 // different concept (the hours within an enabled service, not the service
-// itself). Hours are still edited on /panel/dostepnosc (pełnopłatna/
-// niskopłatna only, for now); this screen only reads a summary of them.
+// itself). Hours are edited on /panel/dostepnosc, which shows one tab per
+// enabled service — see getEnabledServiceIds.
 
 const MANAGED_SERVICE_TYPES: readonly ServiceType[] = [...BASE_SERVICE_TYPES, ...GRANTABLE_SERVICE_TYPES];
 
-// Same shape as getWeeklyAvailability, generalized to an arbitrary set of
-// service ids instead of the hardcoded pełnopłatna/niskopłatna pair — kept
-// as a separate function rather than reusing getWeeklyAvailability so this
-// screen doesn't depend on (or need to touch) ManagedAvailabilityService.
+// The tabs /panel/dostepnosc shows: base services always, grantable ones
+// once the foundation has created a practitioner_services row — regardless
+// of isAccepting, since pausing a service shouldn't hide its hours editor.
+// Both /panel/dostepnosc's server actions re-derive this list themselves
+// before writing, rather than trusting whatever tab set the client posts.
+export async function getEnabledServiceIds(practitionerId: string): Promise<ServiceType[]> {
+  const practitioner = await getPractitioner(practitionerId);
+  const grantedIds = new Set((practitioner?.services ?? []).map((s) => s.serviceId));
+  return [...BASE_SERVICE_TYPES, ...GRANTABLE_SERVICE_TYPES.filter((id) => grantedIds.has(id))];
+}
+
 export async function getWeeklyHoursSummary(
   practitionerId: string,
   serviceIds: readonly ServiceType[]
@@ -1190,7 +1161,7 @@ function addDaysUtc(date: string, days: number): string {
 
 export async function getHourOverrides(
   practitionerId: string,
-  serviceId: ManagedAvailabilityService,
+  serviceId: ServiceType,
   fromDate: string,
   days = MAX_SLOT_DAYS_AHEAD
 ): Promise<StoredHourOverride[]> {
@@ -1295,7 +1266,7 @@ export async function getBookedVisits(
  */
 export async function toggleHourOverride(input: {
   practitionerId: string;
-  serviceId: ManagedAvailabilityService;
+  serviceId: ServiceType;
   date: string;
   hour: number;
   intent: "open" | "closed" | "clear";
