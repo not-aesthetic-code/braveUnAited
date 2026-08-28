@@ -67,6 +67,7 @@ export const MIN_LEAD_HOURS = 2;
 export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
 
 // Lazy singleton — a top-level createClient() call would throw at build
@@ -170,14 +171,22 @@ export async function getAppointment(id: string, now = new Date()): Promise<Appo
 }
 
 // Dedup key is phone — the only identifier guest booking reliably collects.
+// Normalized first (see phone.ts — +48 is hardcoded, every patient is
+// Polish) so "600 100 200" and "600-100-200" from two different bookings
+// resolve to the same patient instead of two rows — the `patients.phone`
+// column is `unique`, so an unnormalized duplicate would otherwise fail the
+// insert instead of merging.
 // Never overwrite an already-set email on conflict: /konto looks bookings up
 // by email, so silently moving a patient's email to whatever they typed on
 // their latest booking would strand their older bookings under the old one.
 async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
+  const phone = normalizePolishPhone(contact.phone);
+  if (!phone) throw new Error("podaj poprawny polski numer telefonu, np. 600 123 456");
+
   const { data: existing, error: lookupError } = await db()
     .from("patients")
     .select("id, email")
-    .eq("phone", contact.phone)
+    .eq("phone", phone)
     .maybeSingle();
   if (lookupError) throw lookupError;
 
@@ -191,7 +200,7 @@ async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: stri
 
   const { data, error } = await db()
     .from("patients")
-    .insert({ name: contact.name, email: contact.email || null, phone: contact.phone })
+    .insert({ name: contact.name, email: contact.email || null, phone })
     .select("id")
     .single();
   if (error) throw error;

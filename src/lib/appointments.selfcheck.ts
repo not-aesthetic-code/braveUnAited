@@ -22,7 +22,12 @@ import {
   ATTENDANCE_GRACE_HOURS,
 } from "./appointments";
 
-const contact = { name: "Test", email: "selfcheck@example.com", phone: "123" };
+// A bare national number — the +48 country code is hardcoded (see phone.ts),
+// so upsertPatientByPhone stores this as "+48690000001". The finally block
+// below has to look appointments up by that stored form, not this raw input.
+// A placeholder like the old "123" would now be rejected outright.
+const contact = { name: "Test", email: "selfcheck@example.com", phone: "690000001" };
+const contactPhoneStored = "+48690000001";
 
 async function main() {
   // Hold expires after HOLD_MINUTES.
@@ -134,6 +139,32 @@ async function main() {
     );
   }
 
+  // Phone normalization is wired into upsertPatientByPhone: different ways
+  // of typing the same national number (see phone.selfcheck.ts for the
+  // pure-function cases) resolve to the same patient row, and a number that
+  // isn't 9 digits is rejected before it can reach the DB at all.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const a = await holdSlot(
+      { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T10:00:00Z", patientContact: { ...contact, phone: "690 000 001" } },
+      now
+    );
+    const b = await holdSlot(
+      { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T11:30:00Z", patientContact: { ...contact, phone: "690-000-001" } },
+      now
+    );
+    assert.equal(a.patientId, b.patientId, "different formats of the same number should dedupe to one patient");
+
+    await assert.rejects(
+      () =>
+        holdSlot(
+          { practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-13T13:00:00Z", patientContact: { ...contact, phone: "not-a-phone" } },
+          now
+        ),
+      "an invalid phone number should be rejected"
+    );
+  }
+
   console.log("appointments.ts self-check passed");
 }
 
@@ -143,6 +174,6 @@ main().finally(async () => {
   });
   // patient contact info now lives in `patients`, keyed by phone — delete
   // this run's appointments via that row instead of a patient_email column.
-  const { data: patient } = await db.from("patients").select("id").eq("phone", contact.phone).maybeSingle();
+  const { data: patient } = await db.from("patients").select("id").eq("phone", contactPhoneStored).maybeSingle();
   if (patient) await db.from("appointments").delete().eq("patient_id", patient.id);
 });
