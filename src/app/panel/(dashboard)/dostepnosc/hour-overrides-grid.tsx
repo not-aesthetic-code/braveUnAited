@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { XIcon } from "lucide-react";
+import { StatusBadge } from "@/components/status-badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   ManagedAvailabilityService,
@@ -54,14 +55,6 @@ const CELL_LABEL: Record<HourCellState, string> = {
   removed: "wyłączona — kliknij, aby przywrócić",
   booked: "zajęta przez pacjenta",
   empty: "wolna — kliknij, aby otworzyć",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  held: "Czeka na płatność",
-  confirmed: "Potwierdzona",
-  completed: "Odbyta",
-  no_show: "Pacjent się nie zjawił",
-  cancelled: "Anulowana",
 };
 
 const PAYMENT_LABEL: Record<string, string> = {
@@ -392,7 +385,9 @@ function VisitDialog({ visit, onClose }: { visit: PanelVisit | null; onClose: ()
             </span>
           </Row>
           <Row label="Czas trwania">{visit.durationMinutes} minut</Row>
-          <Row label="Status">{STATUS_LABEL[visit.status] ?? visit.status}</Row>
+          <Row label="Status">
+            <StatusBadge status={visit.status} />
+          </Row>
           <Row label="Płatność">
             {PAYMENT_LABEL[visit.paymentStatus] ?? visit.paymentStatus} · {visit.price} zł
           </Row>
