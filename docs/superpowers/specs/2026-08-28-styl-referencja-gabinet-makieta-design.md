@@ -62,6 +62,18 @@ nowej palety** (zielony/indygo) zamiast zostawiać domyślną szarość shadcn.
 | ring | `#01be4a` | `#01be4a` |
 | radius (bazowy) | `0.75rem` (12px) | tak samo |
 
+Poza zakresem tej zmiany (istniejące tokeny shadcn, aplikacja ich nie
+używa — zostają wartości domyślne z obecnego `globals.css`):
+`chart-1..5`, `sidebar*`. `destructive-foreground` też nie jest dotykany —
+w `button.tsx` wariant `destructive` używa `bg-destructive/10 text-destructive`
+(subtelne tło + kolorowy tekst), nie pełnego wypełnienia wymagającego
+osobnego koloru tekstu na nim.
+
+Wartość `oklch(1 0 0 / 10%)` dla ciemnego `border`/`input` jest celowo w
+innym formacie niż reszta tabeli (nie hex) — to półprzezroczysta biel na
+dowolnym ciemnym tle, wzięta wprost z obecnego pliku, i nie da się tego
+tak samo wyrazić hexem bez dodatkowego kanału alfa.
+
 ## Pozostałe zmiany
 
 - **Font** — `src/app/layout.tsx`: zamiana `Geist`/`Geist_Mono` na `Roboto`
@@ -69,9 +81,15 @@ nowej palety** (zielony/indygo) zamiast zostawiać domyślną szarość shadcn.
   `globals.css` (poprzedni zapis `--font-sans: var(--font-sans)` był
   samo-referencyjny i nigdy realnie nie podłączał Geista — naprawione przy
   okazji).
-- **Przyciski** — `src/components/ui/button.tsx`: dodanie `rounded-full`,
-  aby odwzorować pigułkowy kształt CTA z referencji. Reszta komponentów
-  shadcn dziedziczy `--radius` bez zmian w kodzie.
+- **Przyciski** — `src/components/ui/button.tsx`: w bazowej klasie
+  `buttonVariants` zamiana `rounded-lg` na `rounded-full` (linia 7). Warianty
+  rozmiaru `xs`, `sm`, `icon-xs`, `icon-sm` mają własny, nadpisujący promień
+  (`rounded-[min(var(--radius-md),10-12px)]`) i **celowo zostają bez zmian**
+  — to zgodne z referencją, gdzie kompaktowe kontrolki też nie skalują się
+  jak duże CTA. Warianty `default`, `lg`, `icon`, `icon-lg` (bez własnego
+  nadpisania) odziedziczą pełny `rounded-full`, odwzorowując pigułkowe
+  przyciski z referencji. Reszta komponentów shadcn dziedziczy `--radius`
+  bez zmian w kodzie.
 - Struktura komponentów i layout bez zmian — to wyłącznie zmiana tokenów
   wizualnych.
 
