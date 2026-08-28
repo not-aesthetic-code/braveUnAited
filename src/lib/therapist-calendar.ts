@@ -235,8 +235,11 @@ export function buildMonthDays(anchor: string): MonthDay[] {
 // service is the plain `service_id` string the availability rows are scoped
 // by. That keeps the grid free of back-and-forth weekday conversions.
 
-export const GRID_FIRST_HOUR = 8;
-export const GRID_LAST_HOUR = 19;
+// Fallback window only — the real one follows whatever the practitioner has
+// actually set. Someone who opens 06:00 must see a 06:00 row, otherwise the
+// rhythm they just saved is invisible here.
+export const DEFAULT_FIRST_HOUR = 8;
+export const DEFAULT_LAST_HOUR = 19;
 // 7 days exactly, because MAX_SLOT_DAYS_AHEAD is 7 — a practitioner cannot
 // publish availability further out than the grid can show.
 export const GRID_DAYS = 7;
@@ -256,8 +259,41 @@ export type BookedBlock = { date: string; startHour: number; endHour: number };
 
 export type HourCell = { date: string; hour: number; state: HourCellState };
 
-export function gridHours(): number[] {
-  return Array.from({ length: GRID_LAST_HOUR - GRID_FIRST_HOUR + 1 }, (_, i) => GRID_FIRST_HOUR + i);
+export type HourBounds = { first: number; last: number };
+
+/**
+ * The hour rows the grid has to draw: the default window widened to cover
+ * every range, override and booked visit it is being asked to show. Without
+ * this the grid silently swallows anything outside 08:00-19:00.
+ */
+export function hourBoundsFor(input: {
+  rhythm: RhythmRange[];
+  overrides: HourOverride[];
+  visits: { startHour: number; endHour: number }[];
+}): HourBounds {
+  let first = DEFAULT_FIRST_HOUR;
+  let last = DEFAULT_LAST_HOUR;
+
+  const widen = (from: number, to: number) => {
+    if (Number.isFinite(from)) first = Math.min(first, Math.max(0, from));
+    if (Number.isFinite(to)) last = Math.max(last, Math.min(23, to));
+  };
+
+  for (const range of input.rhythm) {
+    const start = timeToMinutes(range.startTime);
+    const end = timeToMinutes(range.endTime);
+    if (start === null || end === null || end <= start) continue;
+    // `end` is exclusive: a range ending at 17:00 fills the 16:00 row, not 17:00.
+    widen(Math.floor(start / 60), Math.ceil(end / 60) - 1);
+  }
+  for (const override of input.overrides) widen(override.hour, override.hour);
+  for (const visit of input.visits) widen(visit.startHour, visit.endHour - 1);
+
+  return { first, last };
+}
+
+export function gridHours(bounds: HourBounds = { first: DEFAULT_FIRST_HOUR, last: DEFAULT_LAST_HOUR }): number[] {
+  return Array.from({ length: bounds.last - bounds.first + 1 }, (_, i) => bounds.first + i);
 }
 
 export function gridDates(from: string): string[] {
@@ -275,8 +311,9 @@ export function buildHourGrid(input: {
   rhythm: RhythmRange[];
   overrides: HourOverride[];
   booked: BookedBlock[];
+  bounds?: HourBounds;
 }): HourCell[] {
-  const hours = gridHours();
+  const hours = gridHours(input.bounds);
   return gridDates(input.from).flatMap((date) => {
     const dayOfWeek = dayOfWeekOf(date);
     return hours.map((hour): HourCell => {

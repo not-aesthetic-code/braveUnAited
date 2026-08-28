@@ -5,6 +5,7 @@ import {
   dayOfWeekOf,
   gridDates,
   gridHours,
+  hourBoundsFor,
   minutesOfEligibleAvailability,
   nextOverride,
   startOfWarsawWeek,
@@ -105,5 +106,30 @@ assert.equal(nextOverride("booked"), null, "a booked hour is not editable from t
 assert.deepEqual(gridDates("2026-08-31").slice(0, 3), ["2026-08-31", "2026-09-01", "2026-09-02"]);
 assert.equal(dayOfWeekOf("2026-08-30"), 0, "Sunday is 0, matching the DB");
 assert.equal(dayOfWeekOf("2026-08-31"), 1);
+
+// Grid rows follow the data, not a hardcoded 08:00-19:00 window.
+assert.deepEqual(hourBoundsFor({ rhythm: [], overrides: [], visits: [] }), { first: 8, last: 19 });
+assert.deepEqual(
+  hourBoundsFor({ rhythm: [{ dayOfWeek: 1, startTime: "06:00", endTime: "17:00" }], overrides: [], visits: [] }),
+  { first: 6, last: 19 },
+  "an early start widens the window down to it",
+);
+assert.deepEqual(
+  hourBoundsFor({ rhythm: [{ dayOfWeek: 1, startTime: "09:00", endTime: "22:00" }], overrides: [], visits: [] }),
+  { first: 8, last: 21 },
+  "an exclusive end must not add an empty trailing row",
+);
+assert.deepEqual(
+  hourBoundsFor({ rhythm: [], overrides: [{ date: "2026-08-31", hour: 7, kind: "open" }], visits: [] }),
+  { first: 7, last: 19 },
+  "a manually added hour outside the rhythm still needs a row",
+);
+assert.deepEqual(
+  hourBoundsFor({ rhythm: [], overrides: [], visits: [{ startHour: 20, endHour: 22 }] }),
+  { first: 8, last: 21 },
+  "a late booked visit must stay visible",
+);
+assert.equal(gridHours({ first: 6, last: 8 }).length, 3);
+assert.deepEqual(gridHours({ first: 6, last: 8 }), [6, 7, 8]);
 
 console.log("therapist calendar self-check passed");

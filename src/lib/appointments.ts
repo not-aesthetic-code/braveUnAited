@@ -1001,31 +1001,46 @@ export async function getHourOverrides(
  * from appointments — a held-but-unpaid slot still blocks the hour, the same
  * way it blocks a patient's booking.
  */
-export async function getBookedHourBlocks(
+export type PanelVisit = {
+  id: string;
+  date: string; // Warsaw YYYY-MM-DD
+  startHour: number; // whole-hour grid row the block starts on
+  endHour: number; // exclusive — a 90-minute visit spans two rows
+  startLabel: string; // "14:00"
+  endLabel: string; // "15:30"
+  serviceId: ServiceType;
+  serviceTitle: string;
+  durationMinutes: number;
+  status: AppointmentStatus;
+  paymentStatus: Appointment["paymentStatus"];
+  price: number;
+  patient: { name: string; email: string; phone: string };
+};
+
+/**
+ * Booked visits inside the grid window, each already reduced to the whole
+ * hours it covers so the grid can render one merged block instead of N
+ * identical cells — a 90-minute ADHD diagnosis genuinely occupies two rows.
+ */
+export async function getBookedVisits(
   practitionerId: string,
   fromDate: string,
   days = MAX_SLOT_DAYS_AHEAD,
   now = new Date()
-): Promise<{ date: string; startHour: number; endHour: number }[]> {
-  const from = wallTimeToUtc(fromDate, "00:00", WARSAW_TIME_ZONE);
-  const to = wallTimeToUtc(addDaysUtc(fromDate, days), "00:00", WARSAW_TIME_ZONE);
-  const [{ data, error }, services] = await Promise.all([
-    db()
-      .from("appointments")
-      .select("starts_at, service_id, status, held_until")
-      .eq("practitioner_id", practitionerId)
-      .neq("status", "cancelled")
-      .gte("starts_at", from.toISOString())
-      .lt("starts_at", to.toISOString()),
-    getServices(),
-  ]);
-  if (error) throw error;
+): Promise<PanelVisit[]> {
+  const from = wallTimeToUtc(fromDate, "00:00", WARSAW_TIME_ZONE).getTime();
+  const to = wallTimeToUtc(addDaysUtc(fromDate, days), "00:00", WARSAW_TIME_ZONE).getTime();
+  const appointments = await getAppointmentsForPractitioner(practitionerId, now);
 
-  const durationById = new Map(services.map((service) => [service.id, service.durationMinutes]));
-  return ((data ?? []) as { starts_at: string; service_id: string; status: string; held_until: string | null }[])
-    .filter((row) => !(row.status === "held" && row.held_until && new Date(row.held_until) <= now))
-    .map((row) => {
-      const startsAt = new Date(row.starts_at);
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return appointments
+    .filter((appointment) => {
+      const startsAt = new Date(appointment.startsAt).getTime();
+      return startsAt >= from && startsAt < to;
+    })
+    .map((appointment) => {
+      const startsAt = new Date(appointment.startsAt);
       const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
         timeZone: WARSAW_TIME_ZONE,
         hour: "2-digit",
@@ -1035,11 +1050,22 @@ export async function getBookedHourBlocks(
         .format(startsAt)
         .split(":")
         .map(Number);
-      const endMinutes = hour * 60 + minute + (durationById.get(row.service_id as ServiceType) ?? 0);
+      const startMinutes = hour * 60 + minute;
+      const endMinutes = startMinutes + appointment.service.durationMinutes;
       return {
+        id: appointment.id,
         date: ymdInTimeZone(startsAt, WARSAW_TIME_ZONE),
         startHour: hour,
         endHour: Math.ceil(endMinutes / 60),
+        startLabel: `${pad(hour)}:${pad(minute)}`,
+        endLabel: `${pad(Math.floor(endMinutes / 60) % 24)}:${pad(endMinutes % 60)}`,
+        serviceId: appointment.serviceId,
+        serviceTitle: appointment.service.title,
+        durationMinutes: appointment.service.durationMinutes,
+        status: appointment.status,
+        paymentStatus: appointment.paymentStatus,
+        price: appointment.price,
+        patient: appointment.patient,
       };
     });
 }

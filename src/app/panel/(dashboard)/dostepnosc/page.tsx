@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import {
-  getBookedHourBlocks,
+  getBookedVisits,
   getHourOverrides,
   getService,
   getWeeklyAvailability,
@@ -20,13 +20,13 @@ export default async function DostepnoscPage() {
   if (!practitionerId) redirect("/panel/login");
 
   const fromDate = warsawToday();
-  const [availability, pelnoplatna, niskoplatna, overridesFull, overridesLow, booked] = await Promise.all([
+  const [availability, pelnoplatna, niskoplatna, overridesFull, overridesLow, visits] = await Promise.all([
     getWeeklyAvailability(practitionerId),
     getService("pelnoplatna"),
     getService("niskoplatna"),
     getHourOverrides(practitionerId, "pelnoplatna", fromDate),
     getHourOverrides(practitionerId, "niskoplatna", fromDate),
-    getBookedHourBlocks(practitionerId, fromDate),
+    getBookedVisits(practitionerId, fromDate),
   ]);
 
   if (!pelnoplatna || !niskoplatna) {
@@ -47,7 +47,7 @@ export default async function DostepnoscPage() {
         fromDate={fromDate}
         availability={availability}
         overrides={{ pelnoplatna: overridesFull, niskoplatna: overridesLow }}
-        booked={booked}
+        visits={visits}
       />
     </div>
   );
