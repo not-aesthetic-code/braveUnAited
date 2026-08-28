@@ -3,13 +3,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { XIcon } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type {
-  ManagedAvailabilityService,
-  PanelVisit,
-  StoredHourOverride,
-  WeeklyAvailabilityRange,
-} from "@/lib/appointments";
+import type { ManagedAvailabilityService, PanelVisit, StoredHourOverride } from "@/lib/appointments";
 import {
   buildHourGrid,
   gridDates,
@@ -17,36 +11,40 @@ import {
   hourBoundsFor,
   nextOverride,
   type HourCellState,
+  type RhythmRange,
 } from "@/lib/therapist-calendar";
 import { cn } from "@/lib/utils";
 import { toggleHourOverrideAction } from "./hour-overrides-actions";
-
-const SERVICE_TAB_LABEL: Record<ManagedAvailabilityService, string> = {
-  pelnoplatna: "Konsultacje pełnopłatne",
-  niskoplatna: "Konsultacje niskopłatne",
-};
 
 const SHORT_DAYS = ["ndz", "pon", "wt", "śr", "czw", "pt", "sob"];
 const ROW_HEIGHT = "2.5rem";
 
 // One colour per service type, because the grid mixes them: a booked block
 // has to say *which* kind of visit it is at a glance, not just "zajęte".
+// Green is spoken for: it means "wolna godzina z rytmu". Nothing else in the
+// grid may be green, or a booked visit reads as free time at a glance.
 const VISIT_STYLE: Record<string, { block: string; dot: string; short: string }> = {
-  niskoplatna: { block: "border-emerald-600/40 bg-emerald-500/15 text-emerald-900 dark:text-emerald-200", dot: "bg-emerald-600", short: "Niskopłatna" },
-  pelnoplatna: { block: "border-indigo-600/40 bg-indigo-500/15 text-indigo-900 dark:text-indigo-200", dot: "bg-indigo-600", short: "Pełnopłatna" },
-  adhd_diagnoza: { block: "border-amber-600/40 bg-amber-500/20 text-amber-900 dark:text-amber-200", dot: "bg-amber-600", short: "Diagnoza ADHD" },
-  bezplatna: { block: "border-teal-600/40 bg-teal-500/15 text-teal-900 dark:text-teal-200", dot: "bg-teal-600", short: "Bezpłatna" },
-  asystent_zdrowienia: { block: "border-slate-500/40 bg-slate-500/15 text-slate-900 dark:text-slate-200", dot: "bg-slate-500", short: "Asystent" },
+  niskoplatna: { block: "border-sky-600/50 bg-sky-500/20 text-sky-950 dark:text-sky-100", dot: "bg-sky-600", short: "Niskopłatna" },
+  pelnoplatna: { block: "border-indigo-600/50 bg-indigo-500/20 text-indigo-950 dark:text-indigo-100", dot: "bg-indigo-600", short: "Pełnopłatna" },
+  adhd_diagnoza: { block: "border-amber-600/50 bg-amber-500/25 text-amber-950 dark:text-amber-100", dot: "bg-amber-600", short: "Diagnoza ADHD" },
+  bezplatna: { block: "border-fuchsia-600/50 bg-fuchsia-500/15 text-fuchsia-950 dark:text-fuchsia-100", dot: "bg-fuchsia-600", short: "Bezpłatna" },
+  asystent_zdrowienia: { block: "border-slate-500/50 bg-slate-500/20 text-slate-950 dark:text-slate-100", dot: "bg-slate-500", short: "Asystent" },
 };
 
 const FALLBACK_VISIT_STYLE = { block: "border-border bg-muted text-foreground", dot: "bg-muted-foreground", short: "Wizyta" };
 const visitStyle = (serviceId: string) => VISIT_STYLE[serviceId] ?? FALLBACK_VISIT_STYLE;
 
+// A correction has to be readable *next to* the green rhythm cells, not just
+// different from them in the abstract: violet for an hour added by hand, a
+// red hatch for one switched off.
+const HATCH =
+  "[background-image:repeating-linear-gradient(135deg,transparent,transparent_4px,var(--hatch)_4px,var(--hatch)_6px)]";
+
 const CELL_STYLE: Record<Exclude<HourCellState, "booked">, string> = {
-  rhythm: "bg-primary/15 border-primary/40 hover:bg-primary/25",
-  added: "bg-secondary border-secondary-foreground/50 hover:bg-secondary/80",
-  removed: "border-dashed bg-muted text-muted-foreground hover:bg-muted/70",
-  empty: "bg-card hover:bg-secondary/50",
+  rhythm: "border-primary/40 bg-primary/15 hover:bg-primary/25",
+  added: "border-violet-600 bg-violet-500/30 text-violet-800 ring-1 ring-inset ring-violet-600/40 hover:bg-violet-500/40 dark:text-violet-200",
+  removed: `border-dashed border-rose-400 bg-rose-500/10 text-rose-700 [--hatch:var(--color-rose-400)] ${HATCH} hover:bg-rose-500/20 dark:text-rose-300`,
+  empty: "border-border bg-card hover:bg-muted",
 };
 
 const CELL_LABEL: Record<HourCellState, string> = {
@@ -65,20 +63,40 @@ const PAYMENT_LABEL: Record<string, string> = {
 };
 
 type Props = {
+  serviceId: ManagedAvailabilityService;
   fromDate: string;
-  availability: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>;
-  overrides: Record<ManagedAvailabilityService, StoredHourOverride[]>;
+  /**
+   * The rhythm currently shown in the editor above — including edits that
+   * have not been saved yet, so opening 06:00 there fills the 06:00 row here
+   * immediately instead of after a round trip.
+   */
+  rhythm: RhythmRange[];
+  overrides: StoredHourOverride[];
+  /**
+   * Every booked visit, whatever service it belongs to. One practitioner has
+   * one physical calendar: an hour sold as a pełnopłatna visit is gone for
+   * niskopłatna too, so both tabs must show it as taken.
+   */
   visits: PanelVisit[];
 };
 
-export function HourOverridesGrid({ fromDate, availability, overrides, visits }: Props) {
-  const [activeTab, setActiveTab] = useState<ManagedAvailabilityService>("pelnoplatna");
+export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visits }: Props) {
   const [state, setState] = useState(overrides);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<PanelVisit | null>(null);
   const [, startTransition] = useTransition();
 
-  function toggle(serviceId: ManagedAvailabilityService, date: string, hour: number, cellState: HourCellState) {
+  // The server is the source of truth: a save or a revalidate brings fresh
+  // rows and the optimistic copy has to step aside. Adjusted during render
+  // rather than in an effect, so there is no extra committed pass showing
+  // stale cells (React's "adjusting state when a prop changes" pattern).
+  const [lastServerOverrides, setLastServerOverrides] = useState(overrides);
+  if (lastServerOverrides !== overrides) {
+    setLastServerOverrides(overrides);
+    setState(overrides);
+  }
+
+  function toggle(date: string, hour: number, cellState: HourCellState) {
     const intent = nextOverride(cellState);
     if (!intent) return;
     setError(null);
@@ -87,11 +105,8 @@ export function HourOverridesGrid({ fromDate, availability, overrides, visits }:
     // would make it feel broken. A failed write rolls back to exactly the
     // list we had before this click.
     const previous = state;
-    const withoutCell = state[serviceId].filter((item) => !(item.date === date && item.hour === hour));
-    setState({
-      ...state,
-      [serviceId]: intent === "clear" ? withoutCell : [...withoutCell, { date, hour, kind: intent }],
-    });
+    const withoutCell = state.filter((item) => !(item.date === date && item.hour === hour));
+    setState(intent === "clear" ? withoutCell : [...withoutCell, { date, hour, kind: intent }]);
 
     startTransition(async () => {
       const result = await toggleHourOverrideAction({ serviceId, date, hour, intent });
@@ -105,27 +120,14 @@ export function HourOverridesGrid({ fromDate, availability, overrides, visits }:
   return (
     <div className="flex flex-col gap-4">
       {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ManagedAvailabilityService)}>
-        <TabsList>
-          <TabsTrigger value="pelnoplatna">{SERVICE_TAB_LABEL.pelnoplatna}</TabsTrigger>
-          <TabsTrigger value="niskoplatna">{SERVICE_TAB_LABEL.niskoplatna}</TabsTrigger>
-        </TabsList>
-
-        {(["pelnoplatna", "niskoplatna"] as const).map((serviceId) => (
-          <TabsContent key={serviceId} value={serviceId} className="mt-4">
-            <ServiceGrid
-              fromDate={fromDate}
-              rhythm={availability[serviceId]}
-              overrides={state[serviceId]}
-              visits={visits}
-              onToggle={(date, hour, cellState) => toggle(serviceId, date, hour, cellState)}
-              onOpenVisit={setSelected}
-            />
-          </TabsContent>
-        ))}
-      </Tabs>
-
+      <ServiceGrid
+        fromDate={fromDate}
+        rhythm={rhythm}
+        overrides={state}
+        visits={visits}
+        onToggle={toggle}
+        onOpenVisit={setSelected}
+      />
       <VisitDialog visit={selected} onClose={() => setSelected(null)} />
     </div>
   );
@@ -140,7 +142,7 @@ function ServiceGrid({
   onOpenVisit,
 }: {
   fromDate: string;
-  rhythm: WeeklyAvailabilityRange[];
+  rhythm: RhythmRange[];
   overrides: StoredHourOverride[];
   visits: PanelVisit[];
   onToggle: (date: string, hour: number, state: HourCellState) => void;
@@ -214,9 +216,9 @@ function ServiceGrid({
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">
-        <Legend className="border-primary/40 bg-primary/15">z rytmu tygodniowego</Legend>
-        <Legend className="border-secondary-foreground/50 bg-secondary">dodana ręcznie</Legend>
-        <Legend className="border-dashed bg-muted">wyłączona</Legend>
+        <Legend className={CELL_STYLE.rhythm}>z rytmu tygodniowego</Legend>
+        <Legend className={CELL_STYLE.added}>dodana ręcznie (+)</Legend>
+        <Legend className={CELL_STYLE.removed}>wyłączona (×)</Legend>
         {Object.entries(VISIT_STYLE).map(([serviceId, style]) => (
           <Legend key={serviceId} className={cn("border-transparent", style.dot)}>
             {style.short}
@@ -270,10 +272,13 @@ function ServiceGrid({
                     title={CELL_LABEL[state]}
                     style={{ gridColumn: dayIndex + 2, gridRow: hourIndex + 2 }}
                     className={cn(
-                      "rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+                      "flex items-center justify-center rounded-md border transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
                       CELL_STYLE[state],
                     )}
                   >
+                    <span aria-hidden className="text-[11px] leading-none font-bold opacity-70">
+                      {state === "added" ? "+" : state === "removed" ? "×" : ""}
+                    </span>
                     <span className="sr-only">
                       {date} {String(hour).padStart(2, "0")}:00 — {CELL_LABEL[state]}
                     </span>
@@ -316,10 +321,11 @@ function ServiceGrid({
       </div>
 
       <p className="rounded-lg border-l-2 border-secondary-foreground bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
-        <strong className="block text-secondary-foreground">Poprawki są jednorazowe</strong>
-        Wyłączenie godziny dotyczy tylko tego konkretnego dnia. Jeśli chcesz zmienić coś na stałe, popraw rytm
-        tygodniowy powyżej — inaczej za tydzień wróci to samo. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać
-        terminy.
+        <strong className="block text-secondary-foreground">Poprawki są jednorazowe i dotyczą jednej usługi</strong>
+        Wyłączenie godziny obowiązuje tylko tego konkretnego dnia i tylko w tej zakładce — ta sama godzina w drugim
+        rodzaju konsultacji zostaje otwarta. Jeśli chcesz zmienić coś na stałe, popraw rytm tygodniowy powyżej, bo
+        inaczej za tydzień wróci to samo. Wizyta umówiona przez pacjenta zamyka godzinę we wszystkich usługach naraz —
+        kalendarz jest jeden. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać terminy.
       </p>
     </div>
   );

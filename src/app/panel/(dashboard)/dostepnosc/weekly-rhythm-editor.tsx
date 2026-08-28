@@ -6,9 +6,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ManagedAvailabilityService, Service, WeeklyAvailabilityRange } from "@/lib/appointments";
+import type {
+  ManagedAvailabilityService,
+  PanelVisit,
+  Service,
+  StoredHourOverride,
+  WeeklyAvailabilityRange,
+} from "@/lib/appointments";
 import { timeToMinutes, validateWeeklyRanges } from "@/lib/therapist-calendar";
 import { saveWeeklyAvailabilityAction } from "./actions";
+import { HourOverridesGrid } from "./hour-overrides-grid";
 
 // UI is Monday-first; dayOfWeek matches the DB (0=Sunday..6=Saturday).
 const DAYS = [
@@ -68,9 +75,19 @@ function totalMinutes(ranges: EditableRange[]): number {
 export function WeeklyRhythmEditor({
   initialAvailability,
   services,
+  hourGrid,
 }: {
   initialAvailability: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>;
   services: Record<ManagedAvailabilityService, Service>;
+  // Step 2 of the same screen. It lives inside these tabs rather than beside
+  // them because the two services keep genuinely separate schedules — a
+  // second tab strip would let you read one service's rhythm against the
+  // other service's grid.
+  hourGrid: {
+    fromDate: string;
+    overrides: Record<ManagedAvailabilityService, StoredHourOverride[]>;
+    visits: PanelVisit[];
+  };
 }) {
   const [activeTab, setActiveTab] = useState<ManagedAvailabilityService>("pelnoplatna");
   const [ranges, setRanges] = useState<Record<ManagedAvailabilityService, EditableRange[]>>({
@@ -135,12 +152,21 @@ export function WeeklyRhythmEditor({
 
         {(["pelnoplatna", "niskoplatna"] as const).map((serviceId) => (
           <TabsContent key={serviceId} value={serviceId} className="mt-4">
-            <ServiceScheduleCard
-              service={services[serviceId]}
-              ranges={ranges[serviceId]}
-              onChange={(next) => updateService(serviceId, next)}
-              showCommunityMinimumWarning={serviceId === "niskoplatna"}
-            />
+            <div className="flex flex-col gap-6">
+              <ServiceScheduleCard
+                service={services[serviceId]}
+                ranges={ranges[serviceId]}
+                onChange={(next) => updateService(serviceId, next)}
+                showCommunityMinimumWarning={serviceId === "niskoplatna"}
+              />
+              <HourOverridesGrid
+                serviceId={serviceId}
+                fromDate={hourGrid.fromDate}
+                rhythm={ranges[serviceId]}
+                overrides={hourGrid.overrides[serviceId]}
+                visits={hourGrid.visits}
+              />
+            </div>
           </TabsContent>
         ))}
       </Tabs>

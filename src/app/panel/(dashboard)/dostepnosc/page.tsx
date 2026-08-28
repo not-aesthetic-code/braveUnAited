@@ -7,7 +7,6 @@ import {
 } from "@/lib/appointments";
 import { getPractitionerSession } from "@/lib/panel-auth";
 import { WeeklyRhythmEditor } from "./weekly-rhythm-editor";
-import { HourOverridesGrid } from "./hour-overrides-grid";
 
 // The grid always starts today, in the practitioner's own timezone — not the
 // server's, which is why this goes through Intl rather than toISOString().
@@ -41,13 +40,14 @@ export default async function DostepnoscPage() {
         <p className="text-sm text-muted-foreground">Godziny ustawiasz osobno dla każdej usługi.</p>
       </div>
 
-      <WeeklyRhythmEditor initialAvailability={availability} services={{ pelnoplatna, niskoplatna }} />
-
-      <HourOverridesGrid
-        fromDate={fromDate}
-        availability={availability}
-        overrides={{ pelnoplatna: overridesFull, niskoplatna: overridesLow }}
-        visits={visits}
+      <WeeklyRhythmEditor
+        initialAvailability={availability}
+        services={{ pelnoplatna, niskoplatna }}
+        hourGrid={{
+          fromDate,
+          overrides: { pelnoplatna: overridesFull, niskoplatna: overridesLow },
+          visits,
+        }}
       />
     </div>
   );
