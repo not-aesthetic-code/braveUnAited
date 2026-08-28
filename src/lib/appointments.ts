@@ -40,7 +40,18 @@ export type Practitioner = {
   name: string;
   services: { serviceId: ServiceType; priceOverride: number | null }[];
   meetingInfo: string | null; // video link or address, shown on confirmation
+  email: string | null; // contact for "write to specialist" once the free-cancellation window has passed
 };
+
+// Optional reason a patient gives when cancelling within the free window.
+// Feeds aggregate foundation stats; the practitioner only ever sees it on
+// their own appointment (getAppointmentsForPractitioner already scopes that).
+export const CANCEL_REASONS = [
+  { value: "choroba", label: "Choroba" },
+  { value: "kolizja_obowiazkow", label: "Kolizja z obowiązkami" },
+  { value: "nie_potrzebuje_juz", label: "Nie potrzebuję już wizyty" },
+] as const;
+export type CancelReason = (typeof CANCEL_REASONS)[number]["value"];
 
 export type Appointment = {
   id: string;
@@ -55,14 +66,21 @@ export type Appointment = {
   price: number; // PLN
   rescheduleCount: number; // 0..MAX_RESCHEDULES
   paymentStatus: "pending" | "paid" | "refund_due" | "refunded";
+  cancelReason: CancelReason | null;
 };
 
 export const HOLD_MINUTES = 10;
 export const CANCEL_WINDOW_HOURS = 24;
 export const MAX_RESCHEDULES = 2;
 export const MIN_LEAD_HOURS = 2;
+// A specialist has this long after a session ends to explicitly mark
+// completed/no_show before the system defaults it to "completed" — see
+// expireIfStale().
+export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { sendEmail } from "./email";
+import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
 
 // Lazy singleton — a top-level createClient() call would throw at build
@@ -112,6 +130,7 @@ type Row = {
   price: number;
   reschedule_count: number;
   payment_status: Appointment["paymentStatus"];
+  cancel_reason: CancelReason | null;
 };
 
 function fromRow(r: Row): Appointment {
@@ -128,15 +147,27 @@ function fromRow(r: Row): Appointment {
     price: r.price,
     rescheduleCount: r.reschedule_count,
     paymentStatus: r.payment_status,
+    cancelReason: r.cancel_reason,
   };
 }
 
+function appointmentEndsAt(appt: Appointment): number {
+  return new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
+}
+
 // A hold blocks the slot only until it expires — treat it as free again
-// afterwards instead of leaving a dead "held" record in the way.
+// afterwards instead of leaving a dead "held" record in the way. Likewise, a
+// confirmed appointment nobody explicitly marked completed/no_show for
+// eventually defaults to "completed" (ATTENDANCE_GRACE_HOURS after it ends)
+// — a specialist who forgets to attend to a past visit shouldn't leave it
+// stuck reading "confirmed" forever.
 async function expireIfStale(appt: Appointment, now: Date): Promise<Appointment> {
   if (appt.status === "held" && appt.heldUntil && new Date(appt.heldUntil) <= now) {
     await db().from("appointments").update({ status: "cancelled" }).eq("id", appt.id).eq("status", "held");
     appt.status = "cancelled";
+  } else if (appt.status === "confirmed" && appointmentEndsAt(appt) + ATTENDANCE_GRACE_HOURS * 3_600_000 <= now.getTime()) {
+    await db().from("appointments").update({ status: "completed" }).eq("id", appt.id).eq("status", "confirmed");
+    appt.status = "completed";
   }
   return appt;
 }
@@ -148,14 +179,22 @@ export async function getAppointment(id: string, now = new Date()): Promise<Appo
 }
 
 // Dedup key is phone — the only identifier guest booking reliably collects.
+// Normalized first (see phone.ts — +48 is hardcoded, every patient is
+// Polish) so "600 100 200" and "600-100-200" from two different bookings
+// resolve to the same patient instead of two rows — the `patients.phone`
+// column is `unique`, so an unnormalized duplicate would otherwise fail the
+// insert instead of merging.
 // Never overwrite an already-set email on conflict: /konto looks bookings up
 // by email, so silently moving a patient's email to whatever they typed on
 // their latest booking would strand their older bookings under the old one.
 async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
+  const phone = normalizePolishPhone(contact.phone);
+  if (!phone) throw new Error("podaj poprawny polski numer telefonu, np. 600 123 456");
+
   const { data: existing, error: lookupError } = await db()
     .from("patients")
     .select("id, email")
-    .eq("phone", contact.phone)
+    .eq("phone", phone)
     .maybeSingle();
   if (lookupError) throw lookupError;
 
@@ -169,7 +208,7 @@ async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: stri
 
   const { data, error } = await db()
     .from("patients")
-    .insert({ name: contact.name, email: contact.email || null, phone: contact.phone })
+    .insert({ name: contact.name, email: contact.email || null, phone })
     .select("id")
     .single();
   if (error) throw error;
@@ -268,6 +307,13 @@ function hoursUntil(appt: Appointment, now: Date): number {
   return (new Date(appt.startsAt).getTime() - now.getTime()) / 3_600_000;
 }
 
+// The exact instant the free cancellation/reschedule window closes — shown
+// to the patient so the "you can still cancel free until X" copy names a
+// real date/time instead of just "24 hours".
+export function cancelDeadline(appt: Appointment): Date {
+  return new Date(new Date(appt.startsAt).getTime() - CANCEL_WINDOW_HOURS * 3_600_000);
+}
+
 export function canManage(appt: Appointment, now = new Date()) {
   const hours = hoursUntil(appt, now);
   const withinFreeWindow = hours >= CANCEL_WINDOW_HOURS;
@@ -281,30 +327,43 @@ export function canManage(appt: Appointment, now = new Date()) {
   };
 }
 
-// Rules are enforced here, not just hidden in the UI — this is the trust
-// boundary, a patient could otherwise hit the endpoint directly.
-export async function cancelAppointment(id: string, now = new Date()): Promise<Appointment> {
-  const appt = await getAppointment(id, now);
-  if (!appt) throw new Error("appointment not found");
-  if (!canManage(appt, now).canCancel) {
-    throw new Error("cancellation window has passed — contact the specialist directly");
-  }
+async function applyCancel(id: string, appt: Appointment, reason?: CancelReason | null): Promise<Appointment> {
   const { data, error } = await db()
     .from("appointments")
-    .update({ status: "cancelled", payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus })
+    .update({
+      status: "cancelled",
+      payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus,
+      cancel_reason: reason ?? null,
+    })
     .eq("id", id)
     .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
-  return fromRow(data as Row);
+  const cancelled = fromRow(data as Row);
+
+  // Phone-only guest patients have no email on file — same fallback as
+  // sendVisitReminderEmail, but here it's silent since cancelling must not
+  // fail just because there's nowhere to send the notice.
+  if (cancelled.patient.email) {
+    const when = new Date(cancelled.startsAt).toLocaleString("pl-PL", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    sendEmail(
+      cancelled.patient.email,
+      "Wizyta odwołana",
+      `Cześć ${cancelled.patient.name}, Twoja wizyta ${when} została odwołana.` +
+        (cancelled.paymentStatus === "refund_due" ? " Zwrot płatności zostanie wykonany w 3–5 dni roboczych." : "")
+    );
+  }
+
+  return cancelled;
 }
 
-export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
-  const appt = await getAppointment(id, now);
-  if (!appt) throw new Error("appointment not found");
-  if (!canManage(appt, now).canReschedule) {
-    throw new Error("reschedule window has passed or limit reached");
-  }
+async function applyReschedule(id: string, appt: Appointment, newStartsAt: string): Promise<Appointment> {
   const { data, error } = await db()
     .from("appointments")
     .update({ starts_at: newStartsAt, reschedule_count: appt.rescheduleCount + 1 })
@@ -313,6 +372,85 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, now
     .single();
   if (error) throw error;
   return fromRow(data as Row);
+}
+
+// Rules are enforced here, not just hidden in the UI — this is the trust
+// boundary, a patient could otherwise hit the endpoint directly.
+export async function cancelAppointment(id: string, reason?: CancelReason | null, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (!canManage(appt, now).canCancel) {
+    throw new Error("cancellation window has passed — contact the specialist directly");
+  }
+  return applyCancel(id, appt, reason);
+}
+
+export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (!canManage(appt, now).canReschedule) {
+    throw new Error("reschedule window has passed or limit reached");
+  }
+  return applyReschedule(id, appt, newStartsAt);
+}
+
+// Practitioner side: a doctor can cancel or move their own confirmed visits
+// any time — the 24h window and reschedule cap in canManage() are patient
+// self-service guardrails, not limits on the specialist who owns the slot.
+// Ownership is checked here (not just in the UI) since this is the trust
+// boundary a logged-in practitioner's request crosses.
+export async function cancelAppointmentAsPractitioner(
+  id: string,
+  practitionerId: string,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be cancelled");
+  return applyCancel(id, appt);
+}
+
+// A patient who missed the 24h window and never wrote in, or who simply
+// didn't show up, only gets recorded here — by the practitioner, since "the
+// decision is a person's, not the system's" (see plan.md). `fullRefund` is
+// the specialist's own exception: they can choose to treat a no-show as a
+// full-refund cancellation instead, same as if it had happened >24h out.
+export async function markNoShow(
+  id: string,
+  practitionerId: string,
+  fullRefund: boolean,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be marked as no-show");
+  if (new Date(appt.startsAt).getTime() > now.getTime()) throw new Error("cannot mark a future appointment as no-show");
+
+  if (fullRefund) return applyCancel(id, appt, null);
+
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: "no_show" })
+    .eq("id", id)
+    .select(APPOINTMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
+}
+
+export async function rescheduleAppointmentAsPractitioner(
+  id: string,
+  practitionerId: string,
+  newStartsAt: string,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be rescheduled");
+  return applyReschedule(id, appt, newStartsAt);
 }
 
 // A practitioner's own visit list — same service-role db(), just filtered
@@ -336,13 +474,22 @@ export const REMINDER_AFTER_WEEKS = 6;
 export type ReminderCandidate = {
   patient: { id: string; name: string; email: string; phone: string };
   lastVisitAt: string; // ISO — most recent confirmed appointment in the past
+  lastReminderSentAt: string | null; // ISO — see sendVisitReminderEmail()
 };
 
 // Patients a practitioner should reach out to: their most recent confirmed
 // appointment was REMINDER_AFTER_WEEKS+ ago, and they have nothing booked
-// since. Outreach itself is manual (call/SMS) — same "stub the delivery,
-// build the real logic" pattern as confirmPayment() before Stripe landed —
-// this just surfaces who to call.
+// since. Applies across every service type — nothing here is ADHD-specific,
+// unlike the immediate booking-confirmation SMS in confirmPayment(), which
+// is a different feature entirely. Outreach is specialist-triggered (see
+// sendVisitReminderEmail(), wired to a button in /panel) rather than
+// automatic, so a patient isn't re-emailed on every /panel page load.
+//
+// Includes both "confirmed" (future, or past but still inside the
+// ATTENDANCE_GRACE_HOURS window) and "completed" (settled past visits) —
+// past visits don't stay "confirmed" forever once expireIfStale() runs, so
+// this can't filter on "confirmed" alone without silently losing everyone
+// whose last visit already auto-completed.
 export async function getPatientsToRemind(
   practitionerId: string,
   now = new Date()
@@ -351,17 +498,25 @@ export async function getPatientsToRemind(
     .from("appointments")
     .select(APPOINTMENT_SELECT)
     .eq("practitioner_id", practitionerId)
-    .eq("status", "confirmed")
+    .in("status", ["confirmed", "completed"])
     .order("starts_at", { ascending: false });
   if (error) throw error;
 
-  const appts = ((data ?? []) as Row[]).map(fromRow);
+  // patients(*) in APPOINTMENT_SELECT already pulls last_reminder_sent_at —
+  // it's just not part of the narrower Row/Appointment "patient" shape used
+  // elsewhere, so it's read off the raw row instead of threaded through
+  // fromRow().
+  type RowWithReminderState = Row & { patient: Row["patient"] & { last_reminder_sent_at: string | null } };
+  const appts = ((data ?? []) as RowWithReminderState[]).map((r) => ({
+    ...fromRow(r),
+    lastReminderSentAt: r.patient.last_reminder_sent_at,
+  }));
   const nowMs = now.getTime();
   const cutoffMs = nowMs - REMINDER_AFTER_WEEKS * 7 * 86_400_000;
 
   // Rows are ordered newest-first, so the first past appointment seen per
   // patient is their most recent one.
-  const lastPastVisit = new Map<string, Appointment>();
+  const lastPastVisit = new Map<string, (typeof appts)[number]>();
   const hasUpcoming = new Set<string>();
   for (const appt of appts) {
     if (new Date(appt.startsAt).getTime() >= nowMs) {
@@ -375,10 +530,33 @@ export async function getPatientsToRemind(
   for (const [patientId, appt] of lastPastVisit) {
     if (hasUpcoming.has(patientId)) continue;
     if (new Date(appt.startsAt).getTime() <= cutoffMs) {
-      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt });
+      candidates.push({ patient: appt.patient, lastVisitAt: appt.startsAt, lastReminderSentAt: appt.lastReminderSentAt });
     }
   }
   return candidates.sort((a, b) => a.lastVisitAt.localeCompare(b.lastVisitAt));
+}
+
+// Fires the getPatientsToRemind() outreach as an actual email instead of
+// leaving it as a call-list, and records when it went out so /panel can show
+// "already sent" instead of offering to resend on every reload. A
+// phone-only guest patient has no email to send to — the caller (the
+// specialist, via the panel) still has phone/call as the fallback for them.
+export async function sendVisitReminderEmail(patientId: string, now = new Date()): Promise<void> {
+  const { data: patient, error } = await db().from("patients").select("name, email").eq("id", patientId).single();
+  if (error) throw error;
+  if (!patient.email) throw new Error("patient has no email on file — call instead");
+
+  sendEmail(
+    patient.email,
+    "Zapraszamy na kolejną wizytę",
+    `Cześć ${patient.name}, minęło trochę czasu od Twojej ostatniej wizyty. Jeśli chcesz umówić kolejną, zajrzyj na naszą stronę.`
+  );
+
+  const { error: updateError } = await db()
+    .from("patients")
+    .update({ last_reminder_sent_at: now.toISOString() })
+    .eq("id", patientId);
+  if (updateError) throw updateError;
 }
 
 // Optional patient account (/konto) — matched by email via Supabase Auth
@@ -445,6 +623,7 @@ type PractitionerRow = {
   id: string;
   name: string;
   meeting_info: string | null;
+  email: string | null;
   practitioner_services: { service_id: ServiceType; price_override: number | null }[];
 };
 
@@ -453,24 +632,21 @@ function fromPractitionerRow(r: PractitionerRow): Practitioner {
     id: r.id,
     name: r.name,
     meetingInfo: r.meeting_info,
+    email: r.email,
     services: (r.practitioner_services ?? []).map((ps) => ({ serviceId: ps.service_id, priceOverride: ps.price_override })),
   };
 }
 
+const PRACTITIONER_SELECT = "id, name, meeting_info, email, practitioner_services(service_id, price_override)";
+
 export async function getPractitioners(): Promise<Practitioner[]> {
-  const { data, error } = await db()
-    .from("practitioners")
-    .select("id, name, meeting_info, practitioner_services(service_id, price_override)");
+  const { data, error } = await db().from("practitioners").select(PRACTITIONER_SELECT);
   if (error) throw error;
   return ((data ?? []) as PractitionerRow[]).map(fromPractitionerRow);
 }
 
 export async function getPractitioner(id: string): Promise<Practitioner | undefined> {
-  const { data, error } = await db()
-    .from("practitioners")
-    .select("id, name, meeting_info, practitioner_services(service_id, price_override)")
-    .eq("id", id)
-    .maybeSingle();
+  const { data, error } = await db().from("practitioners").select(PRACTITIONER_SELECT).eq("id", id).maybeSingle();
   if (error) throw error;
   return data ? fromPractitionerRow(data as PractitionerRow) : undefined;
 }
@@ -683,4 +859,93 @@ export async function listAvailableSlots(serviceType: ServiceType, now = new Dat
     }
   }
   return slots;
+}
+
+// --- Practitioner-facing weekly rhythm editor (/panel/dostepnosc) ---------
+
+// The two service tabs this screen manages. adhd_diagnoza/asystent_zdrowienia/
+// bezplatna keep whatever calendar_availability rows they already have —
+// no screen edits them yet.
+export type ManagedAvailabilityService = "pelnoplatna" | "niskoplatna";
+
+export type WeeklyAvailabilityRange = {
+  id: string;
+  dayOfWeek: number; // 0=Sunday..6=Saturday, matches the DB check constraint
+  startTime: string; // "HH:MM"
+  endTime: string;
+};
+
+async function getCalendarId(practitionerId: string): Promise<string> {
+  const { data, error } = await db()
+    .from("calendars")
+    .select("id")
+    .eq("practitioner_id", practitionerId)
+    .single();
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function getWeeklyAvailability(
+  practitionerId: string
+): Promise<Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]>> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_availability")
+    .select("id, service_id, day_of_week, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .in("service_id", ["pelnoplatna", "niskoplatna"])
+    .order("day_of_week")
+    .order("start_time");
+  if (error) throw error;
+
+  const result: Record<ManagedAvailabilityService, WeeklyAvailabilityRange[]> = {
+    pelnoplatna: [],
+    niskoplatna: [],
+  };
+  for (const row of (data ?? []) as {
+    id: string;
+    service_id: ManagedAvailabilityService;
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+  }[]) {
+    result[row.service_id].push({
+      id: row.id,
+      dayOfWeek: row.day_of_week,
+      startTime: row.start_time.slice(0, 5),
+      endTime: row.end_time.slice(0, 5),
+    });
+  }
+  return result;
+}
+
+// Replace-all for one practitioner's one service tab. Not a single DB
+// transaction (delete then insert as two calls) — acceptable here since this
+// is a low-traffic admin screen with no concurrent writers per calendar.
+export async function replaceWeeklyAvailability(
+  practitionerId: string,
+  serviceId: ManagedAvailabilityService,
+  ranges: { dayOfWeek: number; startTime: string; endTime: string }[]
+): Promise<void> {
+  const calendarId = await getCalendarId(practitionerId);
+
+  const { error: deleteError } = await db()
+    .from("calendar_availability")
+    .delete()
+    .eq("calendar_id", calendarId)
+    .eq("service_id", serviceId);
+  if (deleteError) throw deleteError;
+
+  if (ranges.length === 0) return;
+
+  const { error: insertError } = await db().from("calendar_availability").insert(
+    ranges.map((r) => ({
+      calendar_id: calendarId,
+      service_id: serviceId,
+      day_of_week: r.dayOfWeek,
+      start_time: r.startTime,
+      end_time: r.endTime,
+    }))
+  );
+  if (insertError) throw insertError;
 }

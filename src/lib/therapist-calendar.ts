@@ -30,7 +30,7 @@ export type MonthDay = { date: string; inCurrentMonth: boolean };
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-function timeToMinutes(value: string): number | null {
+export function timeToMinutes(value: string): number | null {
   if (!TIME_RE.test(value)) return null;
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;
@@ -91,6 +91,44 @@ export function validateWeeklyAvailability(ranges: WeeklyAvailabilityInput[]): V
     return { ok: false, minutes, error: "Ustaw co najmniej 5 godzin tygodniowo dla wizyt 55 zł lub Darmowych." };
   }
   return { ok: true, minutes };
+}
+
+export type WeeklyRangeInput = { weekday: number; startTime: string; endTime: string };
+
+// Same weekday/ordering/overlap checks as validateWeeklyAvailability, minus
+// the niskopłatna-only service-type gate and the 300-min community floor —
+// used for the pełnopłatna tab, which has neither rule. (The mockup shows no
+// minimum-hours error state for either tab, so the floor is a soft warning
+// rendered from minutesOfEligibleAvailability, not a blocking check here.)
+export function validateWeeklyRanges(ranges: WeeklyRangeInput[]): ExceptionValidationResult {
+  for (const range of ranges) {
+    if (!Number.isInteger(range.weekday) || range.weekday < 1 || range.weekday > 7) {
+      return { ok: false, error: "Wybierz poprawny dzień tygodnia." };
+    }
+    const start = timeToMinutes(range.startTime);
+    const end = timeToMinutes(range.endTime);
+    if (start === null || end === null || end <= start) {
+      return { ok: false, error: "Godzina zakończenia musi być późniejsza niż rozpoczęcia." };
+    }
+  }
+
+  const sorted = [...ranges].sort((a, b) =>
+    a.weekday === b.weekday ? a.startTime.localeCompare(b.startTime) : a.weekday - b.weekday,
+  );
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1];
+    const current = sorted[index];
+    if (previous.weekday !== current.weekday) continue;
+    const previousStart = timeToMinutes(previous.startTime)!;
+    const previousEnd = timeToMinutes(previous.endTime)!;
+    const currentStart = timeToMinutes(current.startTime)!;
+    const currentEnd = timeToMinutes(current.endTime)!;
+    if (rangesOverlap(previousStart, previousEnd, currentStart, currentEnd)) {
+      return { ok: false, error: "Godziny w tym samym dniu nie mogą na siebie nachodzić." };
+    }
+  }
+
+  return { ok: true };
 }
 
 export function validateAvailabilityException(

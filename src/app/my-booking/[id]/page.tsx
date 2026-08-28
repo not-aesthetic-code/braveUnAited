@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { RescheduleCalendar } from "@/components/reschedule-calendar";
 import { StatusBadge } from "@/components/status-badge";
-import { canManage, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
+import { CANCEL_REASONS, canManage, cancelDeadline, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
 
@@ -39,7 +40,7 @@ export default async function ManageBookingPage({
   // — reconcile from the redirect itself too, so a payment doesn't look
   // "unpaid" forever just because the listener wasn't up at the time.
   if (appt?.status === "held" && checkout === "success" && sessionId) {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const session = await stripe().checkout.sessions.retrieve(sessionId);
     if (session.payment_status !== "unpaid") {
       appt = await confirmPayment(id).catch(() => appt);
     }
@@ -54,7 +55,7 @@ export default async function ManageBookingPage({
     );
   }
 
-  const { canCancel, canReschedule } = canManage(appt);
+  const { canCancel, canReschedule, hoursUntil } = canManage(appt);
   const rescheduleOptions = canReschedule
     ? (await listAvailableSlots(appt.serviceId)).filter((s) => s.practitionerId === appt.practitionerId)
     : [];
@@ -121,46 +122,75 @@ export default async function ManageBookingPage({
         </p>
       )}
 
-      {appt.status === "confirmed" && !canCancel && (
+      {appt.status === "confirmed" && canCancel && (
         <p className="text-sm text-muted-foreground">
-          Do wizyty zostało mniej niż 24 godziny — samodzielna zmiana lub odwołanie nie są już
-          możliwe. Napisz bezpośrednio do specjalisty.
+          Możesz jeszcze bezpłatnie zmienić lub odwołać — masz na to czas do{" "}
+          <span className="font-medium text-foreground">
+            {cancelDeadline(appt).toLocaleString("pl-PL", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}
+          </span>
+          .
         </p>
       )}
 
+      {appt.status === "confirmed" && !canCancel && (
+        <div className="flex flex-col gap-3 rounded-xl border bg-card p-5">
+          <p className="text-sm text-muted-foreground">
+            Minął czas na bezpłatną zmianę. Wizyta jest płatna niezależnie od obecności. Decyzję o
+            wyjątku podejmuje specjalista, nie system — napisz do niego bezpośrednio.
+          </p>
+          {practitioner?.email && (
+            <a
+              href={`mailto:${practitioner.email}?subject=${encodeURIComponent(
+                `Wizyta ${new Date(appt.startsAt).toLocaleString("pl-PL")}`
+              )}`}
+            >
+              <Button type="button" variant="outline">Napisz do specjalisty</Button>
+            </a>
+          )}
+        </div>
+      )}
+
       {canReschedule && (
-        <form
-          action={rescheduleBookingAction.bind(null, appt.id)}
-          className="flex flex-col gap-3 rounded-xl border bg-card p-5"
-        >
+        <div className="flex flex-col gap-3 rounded-xl border bg-card p-5">
           <p className="font-medium">Przełóż termin</p>
           <p className="text-xs text-muted-foreground">
             Zmiana {appt.rescheduleCount} z 2 dozwolonych dla tej rezerwacji.
           </p>
-          <select name="newStartsAt" required className="rounded-md border bg-background px-3 py-2 text-sm">
-            <option value="">Wybierz nowy termin…</option>
-            {rescheduleOptions.map((s) => (
-              <option key={s.startsAt} value={s.startsAt}>
-                {new Date(s.startsAt).toLocaleString("pl-PL", {
-                  weekday: "short",
-                  day: "numeric",
-                  month: "short",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </option>
-            ))}
-          </select>
-          <Button type="submit" variant="outline">Zapisz nowy termin</Button>
-        </form>
+          <RescheduleCalendar slots={rescheduleOptions} action={rescheduleBookingAction.bind(null, appt.id)} />
+        </div>
       )}
 
       {canCancel && (
-        <form action={cancelBookingAction.bind(null, appt.id)}>
-          <Button type="submit" variant="destructive">Odwołaj wizytę</Button>
+        <form
+          action={cancelBookingAction.bind(null, appt.id)}
+          className="flex flex-col gap-3 rounded-xl border bg-card p-5"
+        >
+          <p className="font-medium">Odwołaj wizytę</p>
+          <p className="text-sm text-muted-foreground">
+            Do wizyty zostało {Math.round(hoursUntil)} godz. — to więcej niż 24, więc wraca cała
+            kwota. Termin natychmiast zwalnia się dla innych pacjentów.
+          </p>
           {appt.price > 0 && (
-            <p className="mt-2 text-xs text-muted-foreground">Zwrot {appt.price} zł zostanie zlecony ręcznie.</p>
+            <p className="text-sm">
+              Zapłacono: <span className="font-medium">{appt.price} zł</span> · Zwrot:{" "}
+              <span className="font-medium">{appt.price} zł</span> (100%, zwykle w 3–5 dni roboczych)
+            </p>
           )}
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="reason" className="text-sm font-medium">Powód (nieobowiązkowo)</label>
+            <select id="reason" name="reason" className="rounded-md border bg-background px-3 py-2 text-sm">
+              <option value="">Nie podaję powodu</option>
+              {CANCEL_REASONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Powód trafia do zbiorczych statystyk fundacji; specjalista zobaczy go tylko przy tej wizycie.
+            </p>
+          </div>
+
+          <Button type="submit" variant="destructive">Odwołaj wizytę</Button>
         </form>
       )}
     </div>
