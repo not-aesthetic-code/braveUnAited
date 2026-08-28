@@ -483,7 +483,7 @@ export function SlotPicker({
                 return (
                   <button
                     type="button"
-                    key={`${slot.practitionerId}|${slot.startsAt}`}
+                    key={`${slot.practitionerId}|${slot.startsAt}|${slot.serviceId}`}
                     onClick={() => onSelect(slot)}
                     className={`relative flex items-center gap-4 rounded-2xl border p-4 text-left transition-colors ${
                       isSelected
