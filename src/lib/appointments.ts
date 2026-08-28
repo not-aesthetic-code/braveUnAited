@@ -183,15 +183,25 @@ const WORK_END_HOUR = 17;
 
 export type Slot = { specialistId: string; specialistName: string; serviceType: ServiceType; startsAt: string; price: number };
 
+function sessionMinutes(serviceType: ServiceType): number {
+  return serviceType === "adhd_diagnoza" ? ADHD_SLOT_MINUTES : REGULAR_SLOT_MINUTES;
+}
+
 // Slots are duration + buffer apart (50min sessions, 90min ADHD, 10min buffer
 // between), starting at least MIN_LEAD_HOURS from now — matches the real
 // scheduling constraints, not just an arbitrary hourly grid.
+//
+// A specialist has one calendar across all service types: booked time ranges
+// (not just exact start-time matches) block slots for every service, so an
+// ADHD visit (90min) can't be double-booked by a 50min niskoplatna slot that
+// starts partway through it.
 export function listAvailableSlots(serviceType: ServiceType, now = new Date()): Slot[] {
-  const taken = new Set(
-    [...store.values()]
-      .filter((a) => expireIfStale(a, now).status !== "cancelled")
-      .map((a) => `${a.specialistId}|${a.startsAt}`)
-  );
+  const busy = [...store.values()]
+    .filter((a) => expireIfStale(a, now).status !== "cancelled")
+    .map((a) => {
+      const start = new Date(a.startsAt).getTime();
+      return { specialistId: a.specialistId, start, end: start + sessionMinutes(a.serviceType) * 60_000 };
+    });
 
   const slots: Slot[] = [];
   const specialists = SPECIALISTS.filter((s) => s.services.includes(serviceType));
@@ -209,13 +219,17 @@ export function listAvailableSlots(serviceType: ServiceType, now = new Date()): 
       cursor.setHours(WORK_START_HOUR, 0, 0, 0);
       while (cursor.getTime() + durationMinutes * 60_000 <= dayEnd.getTime()) {
         if (cursor >= minStart) {
-          const iso = cursor.toISOString();
-          if (!taken.has(`${spec.id}|${iso}`)) {
+          const candidateStart = cursor.getTime();
+          const candidateEnd = candidateStart + durationMinutes * 60_000;
+          const overlaps = busy.some(
+            (b) => b.specialistId === spec.id && b.start < candidateEnd && candidateStart < b.end
+          );
+          if (!overlaps) {
             slots.push({
               specialistId: spec.id,
               specialistName: spec.name,
               serviceType,
-              startsAt: iso,
+              startsAt: cursor.toISOString(),
               price: priceFor(serviceType, spec.id),
             });
           }
