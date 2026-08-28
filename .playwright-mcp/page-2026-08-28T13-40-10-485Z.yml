@@ -1,0 +1,24 @@
+- generic [active] [ref=f2e1]:
+  - generic [ref=f2e2]:
+    - generic [ref=f2e3]:
+      - link "← Wróć" [ref=f2e4] [cursor=pointer]:
+        - /url: /
+      - heading "Twoja rezerwacja" [level=1] [ref=f2e5]
+    - generic [ref=f2e6]:
+      - paragraph [ref=f2e7]: Konsultacja niskopłatna
+      - paragraph [ref=f2e8]: sobota, 29 sierpnia 09:00
+      - generic [ref=f2e9]:
+        - generic [ref=f2e10]: Potwierdzona
+        - generic [ref=f2e11]: "Płatność: Opłacona"
+      - paragraph [ref=f2e12]: 55 zł
+    - generic [ref=f2e13]:
+      - paragraph [ref=f2e14]: Link do spotkania
+      - link "https://meet.google.com/marek-nowa-kpl" [ref=f2e15] [cursor=pointer]:
+        - /url: https://meet.google.com/marek-nowa-kpl
+    - generic [ref=f2e16]:
+      - paragraph [ref=f2e17]: Minął czas na bezpłatną zmianę. Wizyta jest płatna niezależnie od obecności. Decyzję o wyjątku podejmuje specjalista, nie system — napisz do niego bezpośrednio.
+      - link [ref=f2e18] [cursor=pointer]:
+        - /url: mailto:marek.nowak@example.com?subject=Wizyta%2029.08.2026%2C%2009%3A00%3A00
+        - button "Napisz do specjalisty" [ref=f2e19]
+  - button "Open Next.js Dev Tools" [ref=f2e25] [cursor=pointer]
+  - alert [ref=f2e29]

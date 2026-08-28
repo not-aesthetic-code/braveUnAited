@@ -1,0 +1,15 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - heading "Panel specjalisty" [level=1] [ref=e4]
+      - paragraph [ref=e5]: Zaloguj się, aby zobaczyć swoje wizyty.
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - group [ref=e8]:
+          - generic [ref=e9]: E-mail
+          - textbox "E-mail" [ref=e10]
+        - group [ref=e11]:
+          - generic [ref=e12]: Hasło
+          - textbox "Hasło" [ref=e13]
+      - button "Zaloguj się" [ref=e14]
+  - button "Open Next.js Dev Tools" [ref=e20] [cursor=pointer]

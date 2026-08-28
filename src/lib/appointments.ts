@@ -102,6 +102,7 @@ export const MIN_LEAD_HOURS = 2;
 export const ATTENDANCE_GRACE_HOURS = 48;
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { isValidEmail } from "./email-format";
 import { sendEmail } from "./email";
 import { normalizePolishPhone } from "./phone";
 import { sendSms } from "./sms";
@@ -215,6 +216,11 @@ export async function getAppointment(id: string, now = new Date()): Promise<Appo
 async function upsertPatientByPhone(contact: PatientContact): Promise<{ id: string }> {
   const phone = normalizePolishPhone(contact.phone);
   if (!phone) throw new Error("podaj poprawny polski numer telefonu, np. 600 123 456");
+  // Email is optional, but if given it must look real — it's used for the
+  // confirmation link and, via /konto, as a login identifier.
+  if (contact.email && !isValidEmail(contact.email)) {
+    throw new Error("podaj poprawny adres e-mail albo zostaw pole puste");
+  }
 
   const { data: existing, error: lookupError } = await db()
     .from("patients")
