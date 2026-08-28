@@ -2,6 +2,12 @@ import Link from "next/link";
 import { LoginDialog } from "@/components/login-dialog";
 import { listServicesWithPricing } from "@/lib/appointments";
 
+// Pricing now comes from the DB (practitioner_services) instead of a static
+// import, so this page can no longer be prerendered at build time without
+// requiring Supabase credentials there too — force it to render per-request
+// like every other page in this app already does.
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const services = await listServicesWithPricing();
   return (

@@ -27,10 +27,15 @@ create table if not exists patients (
 );
 alter table patients enable row level security;
 
+-- If the same phone booked under two different emails historically, this
+-- keeps the most recent non-empty one (not just the most recent row) so a
+-- booking's email doesn't silently get discarded in favor of a blank one.
+-- It still only keeps ONE email per phone — see the migration runbook note
+-- in PROGRESS.md before pushing this against real (non-seed) data.
 insert into patients (name, email, phone)
 select distinct on (patient_phone) patient_name, nullif(patient_email, ''), patient_phone
 from appointments
-order by patient_phone, created_at desc
+order by patient_phone, (nullif(patient_email, '') is null), created_at desc
 on conflict (phone) do nothing;
 
 alter table appointments add column patient_id uuid references patients(id);
