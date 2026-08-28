@@ -306,6 +306,47 @@ export function dayOfWeekOf(date: string): number {
   return new Date(`${date}T12:00:00Z`).getUTCDay();
 }
 
+/**
+ * Where a single hour comes from. Split out of buildHourGrid so one cell can
+ * be asked about on its own — the cross-service warning needs to know the
+ * state of the *other* consultation type at the same date and hour without
+ * building its whole grid.
+ */
+export function hourStateAt(input: {
+  date: string;
+  hour: number;
+  rhythm: RhythmRange[];
+  overrides: HourOverride[];
+  booked: BookedBlock[];
+}): HourCellState {
+  const { date, hour } = input;
+  const cellStart = hour * 60;
+  const cellEnd = cellStart + 60;
+
+  // A booked visit outranks every editable state: the practitioner cannot
+  // close an hour a patient already holds.
+  if (input.booked.some((block) => block.date === date && block.startHour < hour + 1 && hour < block.endHour)) {
+    return "booked";
+  }
+
+  const override = input.overrides.find((item) => item.date === date && item.hour === hour);
+  if (override) return override.kind === "open" ? "added" : "removed";
+
+  const dayOfWeek = dayOfWeekOf(date);
+  const inRhythm = input.rhythm.some((range) => {
+    if (range.dayOfWeek !== dayOfWeek) return false;
+    const start = timeToMinutes(range.startTime);
+    const end = timeToMinutes(range.endTime);
+    return start !== null && end !== null && rangesOverlap(start, end, cellStart, cellEnd);
+  });
+  return inRhythm ? "rhythm" : "empty";
+}
+
+/** True when a patient could still book this hour for this service. */
+export function isBookableState(state: HourCellState): boolean {
+  return state === "rhythm" || state === "added";
+}
+
 export function buildHourGrid(input: {
   from: string;
   rhythm: RhythmRange[];
@@ -314,30 +355,13 @@ export function buildHourGrid(input: {
   bounds?: HourBounds;
 }): HourCell[] {
   const hours = gridHours(input.bounds);
-  return gridDates(input.from).flatMap((date) => {
-    const dayOfWeek = dayOfWeekOf(date);
-    return hours.map((hour): HourCell => {
-      const cellStart = hour * 60;
-      const cellEnd = cellStart + 60;
-
-      // A booked visit outranks every editable state: the practitioner
-      // cannot close an hour a patient already holds.
-      if (input.booked.some((block) => block.date === date && block.startHour < hour + 1 && hour < block.endHour)) {
-        return { date, hour, state: "booked" };
-      }
-
-      const override = input.overrides.find((item) => item.date === date && item.hour === hour);
-      if (override) return { date, hour, state: override.kind === "open" ? "added" : "removed" };
-
-      const inRhythm = input.rhythm.some((range) => {
-        if (range.dayOfWeek !== dayOfWeek) return false;
-        const start = timeToMinutes(range.startTime);
-        const end = timeToMinutes(range.endTime);
-        return start !== null && end !== null && rangesOverlap(start, end, cellStart, cellEnd);
-      });
-      return { date, hour, state: inRhythm ? "rhythm" : "empty" };
-    });
-  });
+  return gridDates(input.from).flatMap((date) =>
+    hours.map((hour) => ({
+      date,
+      hour,
+      state: hourStateAt({ date, hour, rhythm: input.rhythm, overrides: input.overrides, booked: input.booked }),
+    })),
+  );
 }
 
 /**

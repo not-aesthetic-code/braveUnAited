@@ -6,6 +6,8 @@ import {
   gridDates,
   gridHours,
   hourBoundsFor,
+  hourStateAt,
+  isBookableState,
   minutesOfEligibleAvailability,
   nextOverride,
   startOfWarsawWeek,
@@ -131,5 +133,33 @@ assert.deepEqual(
 );
 assert.equal(gridHours({ first: 6, last: 8 }).length, 3);
 assert.deepEqual(gridHours({ first: 6, last: 8 }), [6, 7, 8]);
+
+// The cross-service warning fires on exactly one question: could a patient
+// still book this hour in the other consultation type?
+const otherRhythm = [{ dayOfWeek: 1, startTime: "09:00", endTime: "17:00" }];
+const stateInOther = (overrides: Parameters<typeof hourStateAt>[0]["overrides"], booked: Parameters<typeof hourStateAt>[0]["booked"] = []) =>
+  hourStateAt({ date: "2026-08-31", hour: 10, rhythm: otherRhythm, overrides, booked });
+
+assert.equal(isBookableState(stateInOther([])), true, "open in the other tab — warn");
+assert.equal(
+  isBookableState(stateInOther([{ date: "2026-08-31", hour: 10, kind: "closed" }])),
+  false,
+  "already closed in the other tab — stay quiet",
+);
+assert.equal(
+  isBookableState(stateInOther([{ date: "2026-08-31", hour: 10, kind: "open" }])),
+  true,
+  "hand-added in the other tab is just as bookable",
+);
+assert.equal(
+  isBookableState(stateInOther([], [{ date: "2026-08-31", startHour: 10, endHour: 11 }])),
+  false,
+  "a booked hour is not something a second patient can take",
+);
+assert.equal(
+  isBookableState(hourStateAt({ date: "2026-09-01", hour: 10, rhythm: otherRhythm, overrides: [], booked: [] })),
+  false,
+  "outside the other tab's rhythm there is nothing to protect",
+);
 
 console.log("therapist calendar self-check passed");

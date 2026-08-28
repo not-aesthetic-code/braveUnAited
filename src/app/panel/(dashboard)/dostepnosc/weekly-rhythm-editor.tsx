@@ -165,6 +165,16 @@ export function WeeklyRhythmEditor({
                 rhythm={ranges[serviceId]}
                 overrides={hourGrid.overrides[serviceId]}
                 visits={hourGrid.visits}
+                otherServices={(["pelnoplatna", "niskoplatna"] as const)
+                  .filter((other) => other !== serviceId)
+                  .map((other) => ({
+                    label: SERVICE_TAB_LABEL[other],
+                    // The live editor state, not the saved rows: the warning
+                    // has to judge the schedule the practitioner is looking
+                    // at right now.
+                    rhythm: ranges[other],
+                    overrides: hourGrid.overrides[other],
+                  }))}
               />
             </div>
           </TabsContent>
