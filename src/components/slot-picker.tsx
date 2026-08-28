@@ -350,7 +350,10 @@ export function SlotPicker({
               <p className="text-sm text-muted-foreground">Wybierz dzień i godzinę, żeby zobaczyć dostępnych specjalistów.</p>
             )}
             {candidateSlots.map((slot) => {
-              const isSelected = selectedSlot?.startsAt === slot.startsAt && selectedSlot?.practitionerId === slot.practitionerId;
+              const isSelected =
+                selectedSlot?.startsAt === slot.startsAt &&
+                selectedSlot?.practitionerId === slot.practitionerId &&
+                selectedSlot?.serviceId === slot.serviceId;
               const service = serviceById.get(slot.serviceId);
               const meeting = practitionerById.get(slot.practitionerId)?.meetingInfo ?? null;
               const isOnline = meeting?.startsWith("http") ?? false;
