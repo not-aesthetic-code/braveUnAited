@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { XIcon } from "lucide-react";
+import { TriangleAlertIcon, XIcon } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
 import type { ManagedAvailabilityService, PanelVisit, StoredHourOverride } from "@/lib/appointments";
 import {
@@ -9,8 +9,11 @@ import {
   gridDates,
   gridHours,
   hourBoundsFor,
+  hourStateAt,
+  isBookableState,
   nextOverride,
   type HourCellState,
+  type HourOverride,
   type RhythmRange,
 } from "@/lib/therapist-calendar";
 import { cn } from "@/lib/utils";
@@ -78,12 +81,26 @@ type Props = {
    * niskopłatna too, so both tabs must show it as taken.
    */
   visits: PanelVisit[];
+  /**
+   * The other consultation types on this screen. Closing an hour here only
+   * closes it here, so the practitioner has to be told when the same hour is
+   * still open somewhere else — otherwise "wyłączone" reads as "wolne", and
+   * a patient books the slot they meant to protect.
+   */
+  otherServices: {
+    label: string;
+    rhythm: RhythmRange[];
+    overrides: HourOverride[];
+  }[];
 };
 
-export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visits }: Props) {
+type CrossServiceNotice = { date: string; hour: number; services: string[] };
+
+export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visits, otherServices }: Props) {
   const [state, setState] = useState(overrides);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<PanelVisit | null>(null);
+  const [notice, setNotice] = useState<CrossServiceNotice | null>(null);
   const [, startTransition] = useTransition();
 
   // The server is the source of truth: a save or a revalidate brings fresh
@@ -100,6 +117,23 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
     const intent = nextOverride(cellState);
     if (!intent) return;
     setError(null);
+
+    // Only worth saying when closing an hour, and only about the services
+    // where that hour is genuinely still bookable — an hour nobody offers
+    // needs no warning, and repeating it after every click would train the
+    // practitioner to ignore it.
+    const booked = visits.map(({ date: day, startHour, endHour }) => ({ date: day, startHour, endHour }));
+    const stillOpen =
+      intent === "closed"
+        ? otherServices
+            .filter((other) =>
+              isBookableState(
+                hourStateAt({ date, hour, rhythm: other.rhythm, overrides: other.overrides, booked }),
+              ),
+            )
+            .map((other) => other.label)
+        : [];
+    setNotice(stillOpen.length ? { date, hour, services: stillOpen } : null);
 
     // Optimistic: the grid is a click-heavy surface and a round trip per cell
     // would make it feel broken. A failed write rolls back to exactly the
@@ -125,6 +159,8 @@ export function HourOverridesGrid({ serviceId, fromDate, rhythm, overrides, visi
         rhythm={rhythm}
         overrides={state}
         visits={visits}
+        notice={notice}
+        onDismissNotice={() => setNotice(null)}
         onToggle={toggle}
         onOpenVisit={setSelected}
       />
@@ -138,6 +174,8 @@ function ServiceGrid({
   rhythm,
   overrides,
   visits,
+  notice,
+  onDismissNotice,
   onToggle,
   onOpenVisit,
 }: {
@@ -145,6 +183,8 @@ function ServiceGrid({
   rhythm: RhythmRange[];
   overrides: StoredHourOverride[];
   visits: PanelVisit[];
+  notice: CrossServiceNotice | null;
+  onDismissNotice: () => void;
   onToggle: (date: string, hour: number, state: HourCellState) => void;
   onOpenVisit: (visit: PanelVisit) => void;
 }) {
@@ -320,13 +360,9 @@ function ServiceGrid({
         </div>
       </div>
 
-      <p className="rounded-lg border-l-2 border-secondary-foreground bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
-        <strong className="block text-secondary-foreground">Poprawki są jednorazowe i dotyczą jednej usługi</strong>
-        Wyłączenie godziny obowiązuje tylko tego konkretnego dnia i tylko w tej zakładce — ta sama godzina w drugim
-        rodzaju konsultacji zostaje otwarta. Jeśli chcesz zmienić coś na stałe, popraw rytm tygodniowy powyżej, bo
-        inaczej za tydzień wróci to samo. Wizyta umówiona przez pacjenta zamyka godzinę we wszystkich usługach naraz —
-        kalendarz jest jeden. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać terminy.
-      </p>
+      {notice && <CrossServiceNotice notice={notice} onDismiss={onDismissNotice} />}
+
+      <HowItWorksNote />
     </div>
   );
 }
@@ -334,6 +370,73 @@ function ServiceGrid({
 // Hand-rolled rather than @/components/ui/dialog: that wrapper is currently
 // unused anywhere in the app and its Base UI portal does not mount when the
 // dialog is driven by an `open` prop, so a click produced no visible panel.
+/**
+ * Explains the two things the grid itself cannot show: that a correction is
+ * scoped to one day and one service, and that a patient's booking is not.
+ * Dismissable, because it is a primer — once read it only takes up room. It
+ * comes back on the next load rather than being remembered, so nobody loses
+ * the explanation for good.
+ */
+function HowItWorksNote() {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+
+  return (
+    <div className="flex items-start gap-3 rounded-lg border-l-2 border-secondary-foreground bg-secondary/40 px-3 py-2 text-sm text-muted-foreground">
+      <p className="flex-1">
+        <strong className="block text-secondary-foreground">Poprawki są jednorazowe i dotyczą jednej usługi</strong>
+        Wyłączenie godziny obowiązuje tylko tego konkretnego dnia i tylko w tej zakładce — ta sama godzina w drugim
+        rodzaju konsultacji zostaje otwarta. Jeśli chcesz zmienić coś na stałe, popraw rytm tygodniowy powyżej, bo
+        inaczej za tydzień wróci to samo. Wizyta umówiona przez pacjenta zamyka godzinę we wszystkich usługach naraz —
+        kalendarz jest jeden. Siatka pokazuje 7 dni, bo tylko na tyle wolno wystawiać terminy.
+      </p>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        aria-label="Ukryj wyjaśnienie"
+        className="rounded-md p-1 transition-colors hover:bg-secondary"
+      >
+        <XIcon className="size-4" />
+      </button>
+    </div>
+  );
+}
+
+function CrossServiceNotice({ notice, onDismiss }: { notice: CrossServiceNotice; onDismiss: () => void }) {
+  const when = new Intl.DateTimeFormat("pl-PL", {
+    timeZone: "Europe/Warsaw",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(`${notice.date}T12:00:00Z`));
+  const hour = `${String(notice.hour).padStart(2, "0")}:00`;
+  const list = notice.services.join(" i ");
+  const many = notice.services.length > 1;
+
+  return (
+    <div
+      role="status"
+      className="flex items-start gap-3 rounded-lg border-l-2 border-amber-500 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300"
+    >
+      <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+      <p className="flex-1">
+        <strong className="block">Ta godzina jest nadal otwarta gdzie indziej</strong>
+        {when}, {hour} zamknąłeś tylko w tej zakładce. {many ? "Zakładki" : "Zakładka"} {list}{" "}
+        {many ? "trzymają" : "trzyma"} ten termin dalej wolny, więc pacjent może go zarezerwować. Żeby był naprawdę
+        zajęty, wyłącz go w każdym rodzaju konsultacji.
+      </p>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Zamknij komunikat"
+        className="rounded-md p-1 transition-colors hover:bg-amber-500/20"
+      >
+        <XIcon className="size-4" />
+      </button>
+    </div>
+  );
+}
+
 function VisitDialog({ visit, onClose }: { visit: PanelVisit | null; onClose: () => void }) {
   useEffect(() => {
     if (!visit) return;
