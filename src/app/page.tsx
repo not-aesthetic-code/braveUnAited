@@ -36,7 +36,7 @@ export default async function Home() {
             <Link
               key={service.id}
               href={`/book?service=${service.id}`}
-              className="flex flex-col items-start gap-1 rounded-xl border bg-card p-5 text-left transition-colors hover:bg-muted"
+              className="flex flex-col items-start gap-1 rounded-xl border bg-card p-5 text-left transition-all hover:-translate-y-0.5 hover:border-primary hover:shadow-md"
             >
               <span className="font-medium">{service.title}</span>
               <span className="text-sm text-muted-foreground">{service.description}</span>
