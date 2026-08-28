@@ -185,3 +185,106 @@ export function buildMonthDays(anchor: string): MonthDay[] {
     return { date, inCurrentMonth: date.slice(0, 7) === monthStart.slice(0, 7) };
   });
 }
+
+// --- Hour-correction grid -------------------------------------------------
+// The mockup's "Poprawki na konkretnych godzinach" grid: 7 days x whole
+// hours, each cell showing where that hour comes from. Kept pure so the cell
+// states are testable without a browser or a database.
+
+export const GRID_FIRST_HOUR = 8;
+export const GRID_LAST_HOUR = 19;
+export const GRID_DAYS = 7;
+
+export type HourCellState = "empty" | "rhythm" | "added" | "disabled" | "busy" | "absence";
+
+export type HourCorrection = {
+  id: string;
+  date: string;
+  startTime: string;
+  kind: "open" | "closed";
+  serviceType: CommunityServiceType;
+};
+
+export type BusyBlock = { date: string; startHour: number; endHour: number };
+
+export type HourCell = { date: string; hour: number; state: HourCellState };
+
+export function gridHours(): number[] {
+  return Array.from({ length: GRID_LAST_HOUR - GRID_FIRST_HOUR + 1 }, (_, i) => GRID_FIRST_HOUR + i);
+}
+
+export function gridDates(from: string): string[] {
+  if (!DATE_RE.test(from)) throw new Error("Invalid grid start date");
+  return Array.from({ length: GRID_DAYS }, (_, index) => addUtcDays(from, index));
+}
+
+export function weekdayOf(date: string): number {
+  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
+  return day === 0 ? 7 : day;
+}
+
+export function buildHourGrid(input: {
+  from: string;
+  serviceType: CommunityServiceType;
+  rhythm: WeeklyAvailabilityInput[];
+  corrections: HourCorrection[];
+  absences: AvailabilityExceptionInput[];
+  busy: BusyBlock[];
+}): HourCell[] {
+  const hours = gridHours();
+  return gridDates(input.from).flatMap((date) => {
+    const weekday = weekdayOf(date);
+    return hours.map((hour) => {
+      const cellStart = hour * 60;
+      const cellEnd = cellStart + 60;
+      const covers = (start: string, end: string) => {
+        const from = timeToMinutes(start);
+        const to = timeToMinutes(end);
+        return from !== null && to !== null && rangesOverlap(from, to, cellStart, cellEnd);
+      };
+
+      // Order matters: a booked visit outranks every editable state, and a
+      // holiday outranks the rhythm the same way it does on the server.
+      if (input.busy.some((block) => block.date === date && block.startHour < hour + 1 && hour < block.endHour)) {
+        return { date, hour, state: "busy" as const };
+      }
+      if (input.absences.some((item) => item.date === date && covers(item.startTime, item.endTime))) {
+        return { date, hour, state: "absence" as const };
+      }
+
+      const correction = input.corrections.find(
+        (item) =>
+          item.date === date &&
+          item.serviceType === input.serviceType &&
+          timeToMinutes(item.startTime) === cellStart,
+      );
+      if (correction) return { date, hour, state: correction.kind === "open" ? ("added" as const) : ("disabled" as const) };
+
+      const inRhythm = input.rhythm.some(
+        (range) =>
+          range.weekday === weekday &&
+          range.serviceType === input.serviceType &&
+          covers(range.startTime, range.endTime),
+      );
+      return { date, hour, state: inRhythm ? ("rhythm" as const) : ("empty" as const) };
+    });
+  });
+}
+
+// What a click on a cell should do. Returning the intent (rather than
+// mutating) keeps the decision in one tested place shared by UI and server.
+export function nextCorrection(state: HourCellState): "open" | "closed" | "clear" | null {
+  if (state === "rhythm") return "closed";
+  if (state === "empty") return "open";
+  if (state === "added" || state === "disabled") return "clear";
+  return null;
+}
+
+export function countWeeklySlots(ranges: WeeklyAvailabilityInput[], stepMinutes = 60): number {
+  return ranges.reduce((total, range) => {
+    const start = timeToMinutes(range.startTime);
+    const end = timeToMinutes(range.endTime);
+    if (start === null || end === null || end <= start) return total;
+    return total + Math.floor((end - start) / stepMinutes);
+  }, 0);
+}

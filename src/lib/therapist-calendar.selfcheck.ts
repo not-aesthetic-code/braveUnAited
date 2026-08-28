@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import {
+  buildHourGrid,
   buildMonthDays,
+  countWeeklySlots,
+  gridDates,
+  gridHours,
   minutesOfEligibleAvailability,
+  nextCorrection,
   startOfWarsawWeek,
   warsawWallTimeToIso,
   validateAvailabilityException,
   validateWeeklyAvailability,
+  weekdayOf,
   type AvailabilityExceptionInput,
   type WeeklyAvailabilityInput,
 } from "./therapist-calendar";
@@ -64,5 +70,46 @@ assert.equal(august[5]?.date, "2026-08-01");
 assert.equal(august[41]?.date, "2026-09-06");
 assert.equal(august[5]?.inCurrentMonth, true);
 assert.equal(august[0]?.inCurrentMonth, false);
+
+// --- hour grid ---
+const gridRhythm = [
+  { weekday: 1, startTime: "09:00", endTime: "11:00", serviceType: "niskoplatna" as const },
+  { weekday: 1, startTime: "12:00", endTime: "13:00", serviceType: "bezplatna" as const },
+];
+const grid = buildHourGrid({
+  from: "2026-08-31", // a Monday
+  serviceType: "niskoplatna",
+  rhythm: gridRhythm,
+  corrections: [
+    { id: "c1", date: "2026-08-31", startTime: "10:00", kind: "closed", serviceType: "niskoplatna" },
+    { id: "c2", date: "2026-08-31", startTime: "15:00", kind: "open", serviceType: "niskoplatna" },
+    { id: "c3", date: "2026-08-31", startTime: "16:00", kind: "open", serviceType: "bezplatna" },
+  ],
+  absences: [{ date: "2026-09-01", startTime: "09:00", endTime: "12:00" }],
+  busy: [{ date: "2026-08-31", startHour: 13, endHour: 14 }],
+});
+const stateAt = (date: string, hour: number) =>
+  grid.find((cell) => cell.date === date && cell.hour === hour)?.state;
+
+assert.equal(grid.length, 7 * gridHours().length);
+assert.equal(stateAt("2026-08-31", 9), "rhythm");
+assert.equal(stateAt("2026-08-31", 10), "disabled", "a closed correction beats the rhythm");
+assert.equal(stateAt("2026-08-31", 12), "empty", "the free-consultation range belongs to the other tab");
+assert.equal(stateAt("2026-08-31", 13), "busy");
+assert.equal(stateAt("2026-08-31", 15), "added");
+assert.equal(stateAt("2026-08-31", 16), "empty", "another service's correction must not leak into this tab");
+assert.equal(stateAt("2026-09-01", 9), "absence", "a holiday outranks everything editable");
+assert.equal(stateAt("2026-09-02", 9), "empty", "the rhythm only repeats on its own weekday");
+
+assert.equal(nextCorrection("rhythm"), "closed");
+assert.equal(nextCorrection("empty"), "open");
+assert.equal(nextCorrection("added"), "clear");
+assert.equal(nextCorrection("disabled"), "clear");
+assert.equal(nextCorrection("busy"), null, "a booked hour is not editable from the grid");
+assert.equal(nextCorrection("absence"), null);
+
+assert.deepEqual(gridDates("2026-08-31").slice(0, 3), ["2026-08-31", "2026-09-01", "2026-09-02"]);
+assert.equal(weekdayOf("2026-08-30"), 7, "Sunday is 7, not 0");
+assert.equal(countWeeklySlots(gridRhythm), 3, "two hours plus one, at one visit per hour");
 
 console.log("therapist calendar self-check passed");
