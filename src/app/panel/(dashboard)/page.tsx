@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { RescheduleCalendar } from "@/components/reschedule-calendar";
 import {
   type Appointment,
   getAppointmentsForPractitioner,
@@ -70,24 +71,8 @@ function AppointmentRow({
       </div>
 
       {appt.status === "confirmed" && (
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <form action={reschedulePractitionerBookingAction.bind(null, appt.id)} className="flex items-center gap-2">
-            <select name="newStartsAt" required className="rounded-md border bg-background px-2 py-1 text-sm">
-              <option value="">Przełóż na…</option>
-              {slots.map((s) => (
-                <option key={s.startsAt} value={s.startsAt}>
-                  {new Date(s.startsAt).toLocaleString("pl-PL", {
-                    weekday: "short",
-                    day: "numeric",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </option>
-              ))}
-            </select>
-            <Button type="submit" variant="outline" size="sm">Przełóż</Button>
-          </form>
+        <div className="mt-4 flex flex-col gap-3 border-t pt-4">
+          <RescheduleCalendar slots={slots} action={reschedulePractitionerBookingAction.bind(null, appt.id)} />
           <form action={cancelPractitionerBookingAction.bind(null, appt.id)}>
             <Button type="submit" variant="destructive" size="sm">Odwołaj</Button>
           </form>

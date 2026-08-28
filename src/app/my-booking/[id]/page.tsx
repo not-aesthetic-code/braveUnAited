@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { RescheduleCalendar } from "@/components/reschedule-calendar";
 import { CANCEL_REASONS, canManage, cancelDeadline, confirmPayment, getAppointment, getPractitioner, listAvailableSlots } from "@/lib/appointments";
 import { stripe } from "@/lib/stripe";
 import { cancelBookingAction, payBookingAction, rescheduleBookingAction } from "./actions";
@@ -157,30 +158,13 @@ export default async function ManageBookingPage({
       )}
 
       {canReschedule && (
-        <form
-          action={rescheduleBookingAction.bind(null, appt.id)}
-          className="flex flex-col gap-3 rounded-xl border bg-card p-5"
-        >
+        <div className="flex flex-col gap-3 rounded-xl border bg-card p-5">
           <p className="font-medium">Przełóż termin</p>
           <p className="text-xs text-muted-foreground">
             Zmiana {appt.rescheduleCount} z 2 dozwolonych dla tej rezerwacji.
           </p>
-          <select name="newStartsAt" required className="rounded-md border bg-background px-3 py-2 text-sm">
-            <option value="">Wybierz nowy termin…</option>
-            {rescheduleOptions.map((s) => (
-              <option key={s.startsAt} value={s.startsAt}>
-                {new Date(s.startsAt).toLocaleString("pl-PL", {
-                  weekday: "short",
-                  day: "numeric",
-                  month: "short",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </option>
-            ))}
-          </select>
-          <Button type="submit" variant="outline">Zapisz nowy termin</Button>
-        </form>
+          <RescheduleCalendar slots={rescheduleOptions} action={rescheduleBookingAction.bind(null, appt.id)} />
+        </div>
       )}
 
       {canCancel && (

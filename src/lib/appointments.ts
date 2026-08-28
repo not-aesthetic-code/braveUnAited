@@ -339,7 +339,28 @@ async function applyCancel(id: string, appt: Appointment, reason?: CancelReason 
     .select(APPOINTMENT_SELECT)
     .single();
   if (error) throw error;
-  return fromRow(data as Row);
+  const cancelled = fromRow(data as Row);
+
+  // Phone-only guest patients have no email on file — same fallback as
+  // sendVisitReminderEmail, but here it's silent since cancelling must not
+  // fail just because there's nowhere to send the notice.
+  if (cancelled.patient.email) {
+    const when = new Date(cancelled.startsAt).toLocaleString("pl-PL", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    sendEmail(
+      cancelled.patient.email,
+      "Wizyta odwołana",
+      `Cześć ${cancelled.patient.name}, Twoja wizyta ${when} została odwołana.` +
+        (cancelled.paymentStatus === "refund_due" ? " Zwrot płatności zostanie wykonany w 3–5 dni roboczych." : "")
+    );
+  }
+
+  return cancelled;
 }
 
 async function applyReschedule(id: string, appt: Appointment, newStartsAt: string): Promise<Appointment> {
