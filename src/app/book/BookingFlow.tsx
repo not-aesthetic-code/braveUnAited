@@ -2,8 +2,12 @@
 
 import { useEffect, useMemo, useReducer, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { holdSlotAction, startPaymentAction } from "./actions";
 import type { Appointment, ServiceType, Slot } from "@/lib/appointments";
+
+const ctaClassName = "font-bold tracking-wide uppercase";
 
 const dayKey = (d: Date) => d.toDateString();
 const dateKey = (iso: string) => dayKey(new Date(iso));
@@ -99,7 +103,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
   const [pending, startTransition] = useTransition();
 
   const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState("+48 ");
   const [email, setEmail] = useState("");
 
   const visibleSlots = slots
@@ -167,9 +171,9 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
     <div className="flex flex-col gap-6">
       {/* month calendar — availability only exists within the 7-day publish
           horizon (listAvailableSlots), so most cells are simply unbookable */}
-      <div className="overflow-hidden rounded-xl border bg-card">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <p className="text-lg font-semibold capitalize">
+      <div className="overflow-hidden rounded-4xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <p className="text-lg font-bold capitalize text-secondary-foreground">
             {viewMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
           </p>
           <div className="flex items-center gap-1">
@@ -199,7 +203,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
           </div>
         </div>
 
-        <div className="grid grid-cols-7 border-b text-center text-xs text-muted-foreground">
+        <div className="grid grid-cols-7 border-b border-border text-center text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           {WEEKDAY_LABELS.map((w) => (
             <div key={w} className="py-2">
               {w}
@@ -241,7 +245,9 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
                   {d.getDate()}
                 </span>
                 {hasSlots && (
-                  <span className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+                  <span
+                    className={`flex flex-col gap-0.5 text-[11px] ${isSelected ? "text-accent-foreground" : "text-muted-foreground"}`}
+                  >
                     {daySlots.slice(0, 2).map((s) => (
                       <span key={`${s.practitionerId}|${s.startsAt}`}>{formatTime(s.startsAt)}</span>
                     ))}
@@ -258,8 +264,10 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setSelectedSpecialist("all")}
-            className={`rounded-full border px-3 py-1 text-xs ${
-              selectedSpecialist === "all" ? "border-primary bg-primary/10" : "bg-card"
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              selectedSpecialist === "all"
+                ? "border-primary text-primary"
+                : "border-transparent bg-muted text-muted-foreground hover:text-secondary-foreground"
             }`}
           >
             Wszyscy specjaliści
@@ -268,8 +276,10 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
             <button
               key={id}
               onClick={() => setSelectedSpecialist(id)}
-              className={`rounded-full border px-3 py-1 text-xs ${
-                selectedSpecialist === id ? "border-primary bg-primary/10" : "bg-card"
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                selectedSpecialist === id
+                  ? "border-primary text-primary"
+                  : "border-transparent bg-muted text-muted-foreground hover:text-secondary-foreground"
               }`}
             >
               {name}
@@ -281,7 +291,9 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
       {phase === "browse" && (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
           {visibleSlots.length === 0 && (
-            <p className="col-span-full text-sm text-muted-foreground">Brak wolnych terminów tego dnia.</p>
+            <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+              Brak wolnych terminów tego dnia.
+            </p>
           )}
           {visibleSlots.map((slot) => (
             <button
@@ -289,9 +301,9 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
               onClick={() => pickSlot(slot)}
               className="flex flex-col rounded-lg border bg-card px-3 py-2 text-sm transition-colors hover:border-secondary-foreground hover:bg-secondary hover:text-secondary-foreground"
             >
-              <span className="font-medium">{formatTime(slot.startsAt)}</span>
+              <span>{formatTime(slot.startsAt)}</span>
               {selectedSpecialist === "all" && (
-                <span className="text-xs text-muted-foreground">{slot.practitionerName}</span>
+                <span className="text-xs font-normal text-muted-foreground">{slot.practitionerName}</span>
               )}
             </button>
           ))}
@@ -299,47 +311,57 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
       )}
 
       {phase === "form" && selectedSlot && (
-        <div className="rounded-xl border bg-card p-5">
-          <p className="font-medium">
+        <div className="rounded-4xl border border-border bg-card p-6">
+          <p className="font-semibold text-secondary-foreground">
             {selectedSlot.practitionerName} · {formatDay(selectedSlot.startsAt)}, {formatTime(selectedSlot.startsAt)}
           </p>
           <p className="text-sm text-muted-foreground">
-            {selectedSlot.price > 0 ? `${selectedSlot.price} zł` : "Bezpłatnie"} · termin trzymamy 10 minut
+            <span className="font-bold text-secondary-foreground">
+              {selectedSlot.price > 0 ? `${selectedSlot.price} zł` : "Bezpłatnie"}
+            </span>{" "}
+            · termin trzymamy 10 minut
           </p>
-          <div className="mt-4 flex flex-col gap-3">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Imię i nazwisko"
-              className="rounded-md border bg-background px-3 py-2 text-sm"
-            />
-            {/* +48 is a fixed prefix, not part of the value — every patient
-                is calling from Poland (see lib/phone.ts), so there's nothing
-                to pick here. */}
-            <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm">
-              <span className="text-muted-foreground">+48</span>
-              <input
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="Telefon (wymagany)"
-                type="tel"
-                inputMode="numeric"
-                required
-                className="w-full bg-transparent outline-none"
+          <div className="mt-5 flex flex-col gap-4">
+            <Field>
+              <FieldLabel htmlFor="booking-name">Imię i nazwisko</FieldLabel>
+              <Input id="booking-name" value={name} onChange={(e) => setName(e.target.value)} className="h-10" />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="booking-phone">Telefon (wymagany)</FieldLabel>
+              {/* +48 is a fixed prefix, not part of the value — every patient
+                  is calling from Poland (see lib/phone.ts), so there's nothing
+                  to pick here. */}
+              <div className="flex h-10 items-center gap-2 rounded-lg border border-input bg-transparent px-2.5 text-base focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 md:text-sm dark:bg-input/30">
+                <span className="text-muted-foreground">+48</span>
+                <Input
+                  id="booking-phone"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  type="tel"
+                  inputMode="numeric"
+                  required
+                  className="h-auto border-0 p-0 focus-visible:ring-0"
+                />
+              </div>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="booking-email">E-mail (opcjonalnie)</FieldLabel>
+              <Input
+                id="booking-email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                placeholder="potwierdzenie i link do spotkania"
+                className="h-10"
               />
-            </div>
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="E-mail (opcjonalnie — potwierdzenie i link do spotkania)"
-              type="email"
-              className="rounded-md border bg-background px-3 py-2 text-sm"
-            />
+            </Field>
           </div>
-          {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-          <div className="mt-4 flex gap-2">
+          {error && (
+            <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
+          )}
+          <div className="mt-5 flex gap-2">
             <Button variant="outline" onClick={reset}>Wróć</Button>
-            <Button disabled={!name || !phone || pending} onClick={submitHold}>
+            <Button className={ctaClassName} disabled={!name || !phone || pending} onClick={submitHold}>
               {pending ? "Trzymam termin…" : "Zarezerwuj termin"}
             </Button>
           </div>
@@ -347,27 +369,29 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
       )}
 
       {phase === "held" && appt && selectedSlot && (
-        <div className="rounded-xl border bg-card p-5">
-          <p className="font-medium">
+        <div className="rounded-4xl border border-border bg-card p-6">
+          <p className="font-semibold text-secondary-foreground">
             {selectedSlot.practitionerName} · {formatDay(appt.startsAt)}, {formatTime(appt.startsAt)}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
             Termin zarezerwowany dla Ciebie jeszcze przez{" "}
-            <span className="font-semibold text-foreground">
+            <span className="rounded-full bg-accent px-2 py-0.5 font-bold tabular-nums text-accent-foreground">
               {Math.floor(msLeft / 60000)}:{String(Math.floor((msLeft % 60000) / 1000)).padStart(2, "0")}
             </span>
           </p>
-          {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-          <Button className="mt-4" disabled={pending} onClick={pay}>
+          {error && (
+            <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
+          )}
+          <Button className={`mt-5 ${ctaClassName}`} disabled={pending} onClick={pay}>
             {pending ? "Płacę…" : appt.price > 0 ? `Zapłać ${appt.price} zł i potwierdź` : "Potwierdź bezpłatną wizytę"}
           </Button>
         </div>
       )}
 
       {phase === "expired" && (
-        <div className="rounded-xl border bg-card p-5 text-center">
+        <div className="rounded-4xl border border-border bg-card p-6 text-center">
           <p className="text-sm text-destructive">{error ?? "Czas na płatność minął — termin wrócił do puli."}</p>
-          <Button className="mt-3" variant="outline" onClick={reset}>Wybierz termin ponownie</Button>
+          <Button className="mt-4" variant="outline" onClick={reset}>Wybierz termin ponownie</Button>
         </div>
       )}
     </div>

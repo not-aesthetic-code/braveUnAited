@@ -40,7 +40,18 @@ export type Practitioner = {
   name: string;
   services: { serviceId: ServiceType; priceOverride: number | null }[];
   meetingInfo: string | null; // video link or address, shown on confirmation
+  email: string | null; // contact for "write to specialist" once the free-cancellation window has passed
 };
+
+// Optional reason a patient gives when cancelling within the free window.
+// Feeds aggregate foundation stats; the practitioner only ever sees it on
+// their own appointment (getAppointmentsForPractitioner already scopes that).
+export const CANCEL_REASONS = [
+  { value: "choroba", label: "Choroba" },
+  { value: "kolizja_obowiazkow", label: "Kolizja z obowiązkami" },
+  { value: "nie_potrzebuje_juz", label: "Nie potrzebuję już wizyty" },
+] as const;
+export type CancelReason = (typeof CANCEL_REASONS)[number]["value"];
 
 export type Appointment = {
   id: string;
@@ -55,6 +66,7 @@ export type Appointment = {
   price: number; // PLN
   rescheduleCount: number; // 0..MAX_RESCHEDULES
   paymentStatus: "pending" | "paid" | "refund_due" | "refunded";
+  cancelReason: CancelReason | null;
 };
 
 export const HOLD_MINUTES = 10;
@@ -118,6 +130,7 @@ type Row = {
   price: number;
   reschedule_count: number;
   payment_status: Appointment["paymentStatus"];
+  cancel_reason: CancelReason | null;
 };
 
 function fromRow(r: Row): Appointment {
@@ -134,18 +147,12 @@ function fromRow(r: Row): Appointment {
     price: r.price,
     rescheduleCount: r.reschedule_count,
     paymentStatus: r.payment_status,
+    cancelReason: r.cancel_reason,
   };
 }
 
 function appointmentEndsAt(appt: Appointment): number {
   return new Date(appt.startsAt).getTime() + appt.service.durationMinutes * 60_000;
-}
-
-// Whether a session has started — the earliest point a specialist can
-// meaningfully mark it completed/no_show (they may know at the start that a
-// patient hasn't joined, no need to wait for the full duration to elapse).
-export function isPastAppointment(appt: Appointment, now = new Date()): boolean {
-  return new Date(appt.startsAt).getTime() <= now.getTime();
 }
 
 // A hold blocks the slot only until it expires — treat it as free again
@@ -300,6 +307,13 @@ function hoursUntil(appt: Appointment, now: Date): number {
   return (new Date(appt.startsAt).getTime() - now.getTime()) / 3_600_000;
 }
 
+// The exact instant the free cancellation/reschedule window closes — shown
+// to the patient so the "you can still cancel free until X" copy names a
+// real date/time instead of just "24 hours".
+export function cancelDeadline(appt: Appointment): Date {
+  return new Date(new Date(appt.startsAt).getTime() - CANCEL_WINDOW_HOURS * 3_600_000);
+}
+
 export function canManage(appt: Appointment, now = new Date()) {
   const hours = hoursUntil(appt, now);
   const withinFreeWindow = hours >= CANCEL_WINDOW_HOURS;
@@ -313,10 +327,14 @@ export function canManage(appt: Appointment, now = new Date()) {
   };
 }
 
-async function applyCancel(id: string, appt: Appointment): Promise<Appointment> {
+async function applyCancel(id: string, appt: Appointment, reason?: CancelReason | null): Promise<Appointment> {
   const { data, error } = await db()
     .from("appointments")
-    .update({ status: "cancelled", payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus })
+    .update({
+      status: "cancelled",
+      payment_status: appt.price > 0 ? "refund_due" : appt.paymentStatus,
+      cancel_reason: reason ?? null,
+    })
     .eq("id", id)
     .select(APPOINTMENT_SELECT)
     .single();
@@ -337,13 +355,13 @@ async function applyReschedule(id: string, appt: Appointment, newStartsAt: strin
 
 // Rules are enforced here, not just hidden in the UI — this is the trust
 // boundary, a patient could otherwise hit the endpoint directly.
-export async function cancelAppointment(id: string, now = new Date()): Promise<Appointment> {
+export async function cancelAppointment(id: string, reason?: CancelReason | null, now = new Date()): Promise<Appointment> {
   const appt = await getAppointment(id, now);
   if (!appt) throw new Error("appointment not found");
   if (!canManage(appt, now).canCancel) {
     throw new Error("cancellation window has passed — contact the specialist directly");
   }
-  return applyCancel(id, appt);
+  return applyCancel(id, appt, reason);
 }
 
 export async function rescheduleAppointment(id: string, newStartsAt: string, now = new Date()): Promise<Appointment> {
@@ -372,6 +390,35 @@ export async function cancelAppointmentAsPractitioner(
   return applyCancel(id, appt);
 }
 
+// A patient who missed the 24h window and never wrote in, or who simply
+// didn't show up, only gets recorded here — by the practitioner, since "the
+// decision is a person's, not the system's" (see plan.md). `fullRefund` is
+// the specialist's own exception: they can choose to treat a no-show as a
+// full-refund cancellation instead, same as if it had happened >24h out.
+export async function markNoShow(
+  id: string,
+  practitionerId: string,
+  fullRefund: boolean,
+  now = new Date()
+): Promise<Appointment> {
+  const appt = await getAppointment(id, now);
+  if (!appt) throw new Error("appointment not found");
+  if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
+  if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be marked as no-show");
+  if (new Date(appt.startsAt).getTime() > now.getTime()) throw new Error("cannot mark a future appointment as no-show");
+
+  if (fullRefund) return applyCancel(id, appt, null);
+
+  const { data, error } = await db()
+    .from("appointments")
+    .update({ status: "no_show" })
+    .eq("id", id)
+    .select(APPOINTMENT_SELECT)
+    .single();
+  if (error) throw error;
+  return fromRow(data as Row);
+}
+
 export async function rescheduleAppointmentAsPractitioner(
   id: string,
   practitionerId: string,
@@ -383,30 +430,6 @@ export async function rescheduleAppointmentAsPractitioner(
   if (appt.practitionerId !== practitionerId) throw new Error("not your appointment");
   if (appt.status !== "confirmed") throw new Error("only confirmed appointments can be rescheduled");
   return applyReschedule(id, appt, newStartsAt);
-}
-
-// Explicit outcome for a past session — the counterpart to the automatic
-// completion in expireIfStale(). "no_show" can only be set this way: the
-// system has no signal that a patient didn't attend beyond a specialist
-// saying so.
-export async function markAttendance(
-  id: string,
-  outcome: Extract<AppointmentStatus, "completed" | "no_show">,
-  now = new Date()
-): Promise<Appointment> {
-  const appt = await getAppointment(id, now);
-  if (!appt) throw new Error("appointment not found");
-  if (appt.status !== "confirmed") throw new Error("only a confirmed appointment can be marked");
-  if (!isPastAppointment(appt, now)) throw new Error("appointment hasn't started yet");
-  const { data, error } = await db()
-    .from("appointments")
-    .update({ status: outcome })
-    .eq("id", id)
-    .eq("status", "confirmed")
-    .select(APPOINTMENT_SELECT)
-    .single();
-  if (error) throw error;
-  return fromRow(data as Row);
 }
 
 // A practitioner's own visit list — same service-role db(), just filtered
@@ -579,6 +602,7 @@ type PractitionerRow = {
   id: string;
   name: string;
   meeting_info: string | null;
+  email: string | null;
   practitioner_services: { service_id: ServiceType; price_override: number | null }[];
 };
 
@@ -587,24 +611,21 @@ function fromPractitionerRow(r: PractitionerRow): Practitioner {
     id: r.id,
     name: r.name,
     meetingInfo: r.meeting_info,
+    email: r.email,
     services: (r.practitioner_services ?? []).map((ps) => ({ serviceId: ps.service_id, priceOverride: ps.price_override })),
   };
 }
 
+const PRACTITIONER_SELECT = "id, name, meeting_info, email, practitioner_services(service_id, price_override)";
+
 export async function getPractitioners(): Promise<Practitioner[]> {
-  const { data, error } = await db()
-    .from("practitioners")
-    .select("id, name, meeting_info, practitioner_services(service_id, price_override)");
+  const { data, error } = await db().from("practitioners").select(PRACTITIONER_SELECT);
   if (error) throw error;
   return ((data ?? []) as PractitionerRow[]).map(fromPractitionerRow);
 }
 
 export async function getPractitioner(id: string): Promise<Practitioner | undefined> {
-  const { data, error } = await db()
-    .from("practitioners")
-    .select("id, name, meeting_info, practitioner_services(service_id, price_override)")
-    .eq("id", id)
-    .maybeSingle();
+  const { data, error } = await db().from("practitioners").select(PRACTITIONER_SELECT).eq("id", id).maybeSingle();
   if (error) throw error;
   return data ? fromPractitionerRow(data as PractitionerRow) : undefined;
 }

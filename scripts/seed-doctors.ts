@@ -25,7 +25,7 @@ async function main() {
     auth: { persistSession: false },
   });
 
-  const { data: practitioners, error } = await db.from("practitioners").select("id, name");
+  const { data: practitioners, error } = await db.from("practitioners").select("id, name, email");
   if (error) throw error;
 
   const { data: existing, error: listError } = await db.auth.admin.listUsers();
@@ -34,7 +34,10 @@ async function main() {
   const credentials: { name: string; email: string; password: string }[] = [];
 
   for (const spec of practitioners ?? []) {
-    const email = emailFor(spec.name);
+    // practitioners.email is the source of truth once seeded (migration
+    // 20260828170000); fall back to the derived slug for a practitioner
+    // added before that column was backfilled.
+    const email = spec.email ?? emailFor(spec.name);
     const user = existing.users.find((u) => u.email === email);
 
     if (user) {
