@@ -49,6 +49,7 @@ export async function startPaymentAction(
     const origin = (await headers()).get("origin") ?? "http://localhost:3000";
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
+      ...(appt.patientContact.email ? { customer_email: appt.patientContact.email } : {}),
       line_items: [
         {
           price_data: {
@@ -60,8 +61,8 @@ export async function startPaymentAction(
         },
       ],
       metadata: { appointmentId: appt.id },
-      success_url: `${origin}/my-booking/${appt.id}?checkout=success`,
-      cancel_url: `${origin}/book?service=${appt.serviceType}`,
+      success_url: `${origin}/my-booking/${appt.id}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/my-booking/${appt.id}`,
     });
     if (!session.url) throw new Error("could not start payment");
     return { ok: true, value: { url: session.url } };

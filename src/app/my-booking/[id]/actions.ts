@@ -1,7 +1,15 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { cancelAppointment, rescheduleAppointment } from "@/lib/appointments";
+import { startPaymentAction } from "@/app/book/actions";
+
+export async function payBookingAction(id: string) {
+  const result = await startPaymentAction(id);
+  if (!result.ok) throw new Error(result.error);
+  redirect(result.value.url);
+}
 
 export async function cancelBookingAction(id: string, _formData: FormData) {
   await cancelAppointment(id);
