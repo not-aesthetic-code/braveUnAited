@@ -213,6 +213,20 @@ export function SlotPicker({
     .filter((s) => formatTime(s.startsAt) === selectedTime)
     .sort((a, b) => a.practitionerName.localeCompare(b.practitionerName));
 
+  // Earliest bookable slot under the current type/specialist filters, across
+  // every day — badged in the candidate list so patients who don't care who
+  // they see can just take it instead of hunting for the soonest opening.
+  const nearestSlot = useMemo(() => {
+    let earliest: Slot | undefined;
+    for (const bucket of slotsByDay.values()) {
+      const first = bucket[0];
+      if (first && (!earliest || first.startsAt.localeCompare(earliest.startsAt) < 0)) {
+        earliest = first;
+      }
+    }
+    return earliest;
+  }, [slotsByDay]);
+
   function pickDay(day: Slot[]) {
     const first = day[0];
     if (!first) return;
@@ -337,6 +351,10 @@ export function SlotPicker({
                 </button>
               </div>
 
+              <p className="pb-3 text-center text-xs text-muted-foreground">
+                Terminy aktualizowane co kilka minut
+              </p>
+
               <div className="grid grid-cols-7 text-center text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                 {WEEKDAY_LABELS.map((w) => (
                   <div key={w} className="py-1.5">
@@ -366,7 +384,7 @@ export function SlotPicker({
                       onClick={() => pickDay(daySlotsForCell)}
                       className={`flex size-10 flex-col items-center justify-center gap-1 rounded-xl text-sm transition-colors ${
                         isSelected
-                          ? "bg-primary font-semibold text-primary-foreground"
+                          ? "bg-primary font-bold text-primary-foreground"
                           : isToday
                             ? "border border-primary text-primary"
                             : hasSlots
@@ -453,6 +471,10 @@ export function SlotPicker({
                   selectedSlot?.startsAt === slot.startsAt &&
                   selectedSlot?.practitionerId === slot.practitionerId &&
                   selectedSlot?.serviceId === slot.serviceId;
+                const isNearest =
+                  nearestSlot?.startsAt === slot.startsAt &&
+                  nearestSlot?.practitionerId === slot.practitionerId &&
+                  nearestSlot?.serviceId === slot.serviceId;
                 const service = serviceById.get(slot.serviceId);
                 const meeting =
                   practitionerById.get(slot.practitionerId)?.meetingInfo ??
@@ -463,12 +485,19 @@ export function SlotPicker({
                     type="button"
                     key={`${slot.practitionerId}|${slot.startsAt}`}
                     onClick={() => onSelect(slot)}
-                    className={`flex items-center gap-4 rounded-2xl border p-4 text-left transition-colors ${
+                    className={`relative flex items-center gap-4 rounded-2xl border p-4 text-left transition-colors ${
                       isSelected
                         ? "border-primary bg-accent text-accent-foreground"
-                        : "border-border bg-card hover:border-secondary-foreground hover:bg-secondary"
+                        : isNearest
+                          ? "border-primary/50 bg-card hover:border-primary hover:bg-secondary"
+                          : "border-border bg-card hover:border-secondary-foreground hover:bg-secondary"
                     }`}
                   >
+                    {isNearest && !isSelected && (
+                      <span className="absolute -top-2.5 right-4 rounded-full bg-primary px-2.5 py-0.5 text-[10px] font-bold tracking-wide text-primary-foreground uppercase">
+                        Najbliższy wolny termin
+                      </span>
+                    )}
                     {/* ponytail: initials avatar — swap for practitioner.photoUrl once we have real photos */}
                     <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
                       {initials(slot.practitionerName)}
@@ -492,6 +521,10 @@ export function SlotPicker({
                           {isOnline ? "Online" : meeting}
                         </p>
                       )}
+                      {/* ponytail: static label, single-language practice — becomes real data if multilingual specialists join */}
+                      <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <span aria-hidden>🇵🇱</span> Polski
+                      </p>
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="font-bold text-secondary-foreground">
