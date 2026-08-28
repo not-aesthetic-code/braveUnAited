@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { cancelAppointment, rescheduleAppointment } from "@/lib/appointments";
+import { cancelAppointment, CANCEL_REASONS, rescheduleAppointment, type CancelReason } from "@/lib/appointments";
 import { startPaymentAction } from "@/app/book/actions";
 
 export async function payBookingAction(id: string) {
@@ -11,8 +11,13 @@ export async function payBookingAction(id: string) {
   redirect(result.value.url);
 }
 
-export async function cancelBookingAction(id: string, _formData: FormData) {
-  await cancelAppointment(id);
+function isCancelReason(value: FormDataEntryValue | null): value is CancelReason {
+  return typeof value === "string" && CANCEL_REASONS.some((r) => r.value === value);
+}
+
+export async function cancelBookingAction(id: string, formData: FormData) {
+  const reason = formData.get("reason");
+  await cancelAppointment(id, isCancelReason(reason) ? reason : null);
   revalidatePath(`/my-booking/${id}`);
 }
 

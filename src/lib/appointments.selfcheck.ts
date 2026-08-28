@@ -12,10 +12,13 @@ import {
   confirmPayment,
   cancelAppointment,
   rescheduleAppointment,
+  cancelAppointmentAsPractitioner,
+  rescheduleAppointmentAsPractitioner,
+  markNoShow,
   canManage,
+  cancelDeadline,
   listAvailableSlots,
   getAppointment,
-  markAttendance,
   getPatientsToRemind,
   sendVisitReminderEmail,
   HOLD_MINUTES,
@@ -53,19 +56,47 @@ async function main() {
     await assert.rejects(() => confirmPayment(expired.id, justAfter));
   }
 
-  // Cancel >24h gives refund_due; <24h is rejected.
+  // Cancel >24h gives refund_due (with an optional reason recorded and the
+  // free-cancellation deadline computed 24h before the visit); <24h is
+  // rejected.
   {
     const now = new Date("2026-09-01T10:00:00Z");
     const farHeld = await holdSlot({ practitionerId: "spec-1", serviceType: "pelnoplatna", startsAt: "2026-09-10T11:00:00Z", patientContact: contact }, now);
     const farAppt = await confirmPayment(farHeld.id, now);
-    const cancelled = await cancelAppointment(farAppt.id, now);
+    assert.equal(cancelDeadline(farAppt).toISOString(), "2026-09-09T11:00:00.000Z");
+    const cancelled = await cancelAppointment(farAppt.id, "choroba", now);
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.paymentStatus, "refund_due");
+    assert.equal(cancelled.cancelReason, "choroba");
 
     const soonHeld = await holdSlot({ practitionerId: "spec-1", serviceType: "pelnoplatna", startsAt: "2026-09-01T20:00:00Z", patientContact: contact }, now);
     const soonAppt = await confirmPayment(soonHeld.id, now);
     assert.equal(canManage(soonAppt, now).canCancel, false);
-    await assert.rejects(() => cancelAppointment(soonAppt.id, now));
+    await assert.rejects(() => cancelAppointment(soonAppt.id, null, now));
+  }
+
+  // Practitioner marking a no-show: only allowed once the visit's start time
+  // has passed. Plain no-show leaves payment as "paid" (counts toward the
+  // specialist's settlement); the full-refund exception behaves exactly like
+  // a patient cancellation (refund_due).
+  {
+    const bookedAt = new Date("2026-09-01T06:00:00Z");
+    const startsAt = "2026-09-01T09:00:00Z";
+    const afterVisit = new Date("2026-09-01T10:00:00Z");
+
+    const missedHeld = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt, patientContact: contact }, bookedAt);
+    const missedAppt = await confirmPayment(missedHeld.id, bookedAt);
+    await assert.rejects(() => markNoShow(missedAppt.id, "someone-elses-id", false, afterVisit));
+    await assert.rejects(() => markNoShow(missedAppt.id, "spec-1", false, bookedAt)); // visit hasn't happened yet
+    const noShow = await markNoShow(missedAppt.id, "spec-1", false, afterVisit);
+    assert.equal(noShow.status, "no_show");
+    assert.equal(noShow.paymentStatus, "paid");
+
+    const exceptionHeld = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-02T09:00:00Z", patientContact: contact }, bookedAt);
+    const exceptionAppt = await confirmPayment(exceptionHeld.id, bookedAt);
+    const exception = await markNoShow(exceptionAppt.id, "spec-1", true, new Date("2026-09-02T10:00:00Z"));
+    assert.equal(exception.status, "cancelled");
+    assert.equal(exception.paymentStatus, "refund_due");
   }
 
   // Reschedule stops at MAX_RESCHEDULES.
@@ -95,21 +126,6 @@ async function main() {
       pelnoSlots.every((s) => new Date(s.startsAt).getTime() >= new Date("2026-09-10T10:30:00Z").getTime()),
       "pelnoplatna slot overlaps a booked adhd_diagnoza session"
     );
-  }
-
-  // Attendance: explicit mark only works once the session has started, and
-  // once settled it can't be re-marked.
-  {
-    const now = new Date("2026-09-01T10:00:00Z");
-    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-14T10:00:00Z", patientContact: contact }, now);
-    const appt = await confirmPayment(held.id, now);
-
-    await assert.rejects(() => markAttendance(appt.id, "completed", now), "shouldn't be markable before it starts");
-
-    const afterStart = new Date("2026-09-14T10:05:00Z");
-    const noShow = await markAttendance(appt.id, "no_show", afterStart);
-    assert.equal(noShow.status, "no_show");
-    await assert.rejects(() => markAttendance(appt.id, "completed", afterStart), "already settled, shouldn't be re-markable");
   }
 
   // Unmarked confirmed visits default to "completed" ATTENDANCE_GRACE_HOURS
@@ -204,6 +220,21 @@ async function main() {
       () => sendVisitReminderEmail(noEmailAppt.patientId, now),
       "a patient with no email on file shouldn't be emailable"
     );
+  }
+
+  // Practitioner-side cancel/reschedule: no 24h/reschedule-cap guardrails
+  // (those are patient self-service limits), but ownership is enforced.
+  {
+    const now = new Date("2026-09-01T10:00:00Z");
+    const held = await holdSlot({ practitionerId: "spec-1", serviceType: "niskoplatna", startsAt: "2026-09-01T20:00:00Z", patientContact: contact }, now);
+    const appt = await confirmPayment(held.id, now);
+    assert.equal(canManage(appt, now).canCancel, false); // <24h — would reject the patient-side call
+
+    await assert.rejects(() => cancelAppointmentAsPractitioner(appt.id, "someone-elses-id", now));
+    const moved = await rescheduleAppointmentAsPractitioner(appt.id, "spec-1", "2026-09-01T21:00:00Z", now);
+    assert.equal(moved.startsAt, "2026-09-01T21:00:00Z");
+    const cancelled = await cancelAppointmentAsPractitioner(moved.id, "spec-1", now);
+    assert.equal(cancelled.status, "cancelled");
   }
 
   console.log("appointments.ts self-check passed");
