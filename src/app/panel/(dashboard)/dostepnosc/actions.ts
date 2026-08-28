@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { getPractitionerSession } from "@/lib/panel-auth";
 import { replaceWeeklyAvailability, type ManagedAvailabilityService } from "@/lib/appointments";
 import { validateWeeklyRanges } from "@/lib/therapist-calendar";
@@ -43,6 +44,11 @@ export async function saveWeeklyAvailabilityAction(
       replaceWeeklyAvailability(practitionerId, serviceId, input[serviceId])
     )
   );
+
+  // Without this the hour grid on the same page keeps rendering the
+  // availability the server read before the save, so a newly opened 06:00
+  // never shows up until a hard reload.
+  revalidatePath("/panel/dostepnosc");
 
   return { ok: true };
 }

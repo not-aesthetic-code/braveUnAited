@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getServices, listAvailableSlots, SERVICE_TYPES, type ServiceType } from "@/lib/appointments";
+import { getPractitioners, getServices, listAvailableSlots, SERVICE_TYPES, type ServiceType } from "@/lib/appointments";
 import { BookingFlow } from "./BookingFlow";
 
 function isServiceType(value: string | undefined): value is ServiceType {
@@ -15,27 +15,28 @@ export default async function BookPage(props: PageProps<"/book">) {
   const serviceParam = Array.isArray(service) ? service[0] : service;
   const initialServiceType = isServiceType(serviceParam) ? serviceParam : undefined;
 
-  const [slotsByType, services] = await Promise.all([
+  const [slotsByType, services, practitioners] = await Promise.all([
     Promise.all(SERVICE_TYPES.map((id) => listAvailableSlots(id))),
     getServices(),
+    getPractitioners(),
   ]);
   const slots = slotsByType.flat();
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-8 px-6 py-16">
+    <div className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-16">
       <div>
         <Link href="/" className="text-sm text-muted-foreground transition-colors hover:text-secondary-foreground">
           ← Wróć
         </Link>
         <p className="mt-4 text-xs font-semibold tracking-[0.08em] text-muted-foreground uppercase">Rezerwacja</p>
         <h1 className="mt-1 text-3xl font-extrabold tracking-tight text-secondary-foreground">Umów wizytę</h1>
-        <p className="mt-1 text-muted-foreground">Wybierz rodzaj konsultacji, dzień i wolny termin.</p>
+        <p className="mt-1 text-muted-foreground">Wybierz dzień i godzinę — pokażemy specjalistów dostępnych w tym terminie.</p>
       </div>
 
       {slots.length === 0 ? (
         <p className="text-sm text-muted-foreground">Brak wolnych terminów.</p>
       ) : (
-        <BookingFlow slots={slots} services={services} initialServiceType={initialServiceType} />
+        <BookingFlow slots={slots} services={services} practitioners={practitioners} initialServiceType={initialServiceType} />
       )}
     </div>
   );

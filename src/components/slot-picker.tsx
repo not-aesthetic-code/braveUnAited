@@ -1,12 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Service, ServiceType, Slot } from "@/lib/appointments";
+import { Globe, MapPin } from "lucide-react";
+import type { Practitioner, Service, ServiceType, Slot } from "@/lib/appointments";
 
 const dayKey = (d: Date) => d.toDateString();
 const dateKey = (iso: string) => dayKey(new Date(iso));
 
-const WEEKDAY_LABELS = ["Nd", "Pon", "Wt", "Śr", "Czw", "Pt", "Sob"];
+const WEEKDAY_LABELS = ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Nd"];
 
 // One color per consultation type so the combined calendar can tell them
 // apart at a glance — same 5 ids as SERVICE_TYPES in lib/appointments.
@@ -26,17 +27,27 @@ function addMonths(d: Date, n: number) {
   return new Date(d.getFullYear(), d.getMonth() + n, 1);
 }
 
-// 6 full weeks (Sun–Sat), including the leading/trailing days from
+// 6 full weeks, Monday–Sunday, including the leading/trailing days from
 // neighboring months — same grid shape as every calendar app.
 function buildMonthGrid(monthDate: Date): Date[] {
   const first = startOfMonth(monthDate);
+  const mondayOffset = (first.getDay() + 6) % 7; // getDay(): 0=Sun..6=Sat
   const gridStart = new Date(first);
-  gridStart.setDate(first.getDate() - first.getDay());
+  gridStart.setDate(first.getDate() - mondayOffset);
   return Array.from({ length: 42 }, (_, i) => {
     const d = new Date(gridStart);
     d.setDate(gridStart.getDate() + i);
     return d;
   });
+}
+
+function firstByTime(list: Slot[]): Slot | undefined {
+  return [...list].sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
 }
 
 export function formatDay(iso: string) {
@@ -51,40 +62,47 @@ export function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
 }
 
-// Month calendar + consultation-type filter + specialist filter + time-slot
-// grid for the selected day. Shared by the booking flow and every reschedule
-// flow (patient + panel) so picking a new time always looks and behaves the
-// same, instead of a plain <select> dropdown in some places and this
-// calendar in others.
+// Calendar → day → time → specialist: pick a day (dots show which
+// consultation types are open that day), pick one of that day's times, then
+// pick whoever has that slot. Shared by the booking flow and every
+// reschedule flow (patient + panel) so picking a new time always looks and
+// behaves the same, instead of a plain <select> dropdown in some places and
+// this calendar in others.
 export function SlotPicker({
   slots,
   selectedSlot,
   onSelect,
   onDayChange,
   services = [],
+  practitioners = [],
   initialServiceType,
 }: {
   slots: Slot[];
   selectedSlot: Slot | null;
   onSelect: (slot: Slot) => void;
-  // Called when the user picks a different day — lets a caller mid-flow
-  // (e.g. the booking form) drop back to browsing instead of leaving a
-  // stale slot/phase selected under the newly picked day.
+  // Called when the user picks a different day or time — lets a caller
+  // mid-flow (e.g. the booking form) drop back to browsing instead of
+  // leaving a stale slot/phase selected under the newly picked day/time.
   onDayChange?: () => void;
-  // Titles for the type filter's labels — reschedule flows (always a single
-  // service) can skip this since the filter only renders with 2+ types.
+  // Titles + durations for the specialist cards and the type filter's
+  // labels — reschedule flows (always a single, already-known service) can
+  // skip this since it only enriches the display.
   services?: Service[];
+  // Meeting mode (video link vs address) for the specialist cards —
+  // reschedule flows can skip this too.
+  practitioners?: Practitioner[];
   // Preselects the type filter (e.g. arriving via /book?service=X) without
   // hiding the other types — the calendar still combines every type.
   initialServiceType?: ServiceType;
 }) {
-  const serviceTitleById = useMemo(() => new Map(services.map((s) => [s.id, s.title])), [services]);
+  const serviceById = useMemo(() => new Map(services.map((s) => [s.id, s])), [services]);
+  const practitionerById = useMemo(() => new Map(practitioners.map((p) => [p.id, p])), [practitioners]);
 
   const serviceTypesPresent = useMemo(() => {
     const seen = new Map<ServiceType, string>();
-    for (const s of slots) if (!seen.has(s.serviceId)) seen.set(s.serviceId, serviceTitleById.get(s.serviceId) ?? s.serviceId);
+    for (const s of slots) if (!seen.has(s.serviceId)) seen.set(s.serviceId, serviceById.get(s.serviceId)?.title ?? s.serviceId);
     return [...seen.entries()];
-  }, [slots, serviceTitleById]);
+  }, [slots, serviceById]);
 
   const specialists = useMemo(() => {
     const seen = new Map<string, string>();
@@ -98,9 +116,11 @@ export function SlotPicker({
     return [...seen.values()].sort();
   }, [slots]);
 
-  const [selectedDay, setSelectedDay] = useState(() => {
-    const relevant = initialServiceType ? slots.filter((s) => s.serviceId === initialServiceType) : slots;
-    return [...relevant].sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0]?.startsAt;
+  const initialRelevant = initialServiceType ? slots.filter((s) => s.serviceId === initialServiceType) : slots;
+  const [selectedDay, setSelectedDay] = useState(() => firstByTime(initialRelevant)?.startsAt);
+  const [selectedTime, setSelectedTime] = useState<string | undefined>(() => {
+    const first = firstByTime(initialRelevant);
+    return first ? formatTime(first.startsAt) : undefined;
   });
   const [selectedSpecialist, setSelectedSpecialist] = useState<string>("all");
   const [selectedServiceType, setSelectedServiceType] = useState<ServiceType | "all">(initialServiceType ?? "all");
@@ -124,108 +144,37 @@ export function SlotPicker({
 
   const monthGrid = useMemo(() => buildMonthGrid(viewMonth), [viewMonth]);
 
-  const visibleSlots = slots
-    .filter((s) => selectedDay && dateKey(s.startsAt) === dateKey(selectedDay))
-    .filter((s) => selectedServiceType === "all" || s.serviceId === selectedServiceType)
-    .filter((s) => selectedSpecialist === "all" || s.practitionerId === selectedSpecialist)
-    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const daySlots = (selectedDay && slotsByDay.get(dateKey(selectedDay))) || [];
+
+  const timesForDay = useMemo(() => {
+    const seen = new Map<string, string>(); // formatted time -> earliest matching startsAt (sort key)
+    for (const s of daySlots) {
+      const label = formatTime(s.startsAt);
+      if (!seen.has(label)) seen.set(label, s.startsAt);
+    }
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([label]) => label);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- daySlots is a fresh [] each render when empty, keying off the day/map avoids re-deriving it
+  }, [slotsByDay, selectedDay]);
+
+  const candidateSlots = daySlots
+    .filter((s) => formatTime(s.startsAt) === selectedTime)
+    .sort((a, b) => a.practitionerName.localeCompare(b.practitionerName));
+
+  function pickDay(day: Slot[]) {
+    const first = day[0];
+    if (!first) return;
+    setSelectedDay(first.startsAt);
+    setSelectedTime(formatTime(first.startsAt));
+    onDayChange?.();
+  }
+
+  function pickTime(time: string) {
+    setSelectedTime(time);
+    onDayChange?.();
+  }
 
   return (
     <div className="flex flex-col gap-6">
-      {/* month calendar — availability only exists within the 7-day publish
-          horizon (listAvailableSlots), so most cells are simply unbookable */}
-      <div className="overflow-hidden rounded-4xl border border-border bg-card">
-        <div className="flex items-center justify-between border-b border-border px-6 py-5">
-          <p className="text-xl font-bold capitalize text-secondary-foreground">
-            {viewMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
-          </p>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              aria-label="Poprzedni miesiąc"
-              onClick={() => setViewMonth((m) => addMonths(m, -1))}
-              className="rounded-md border px-2 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
-            >
-              ‹
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMonth(startOfMonth(new Date()))}
-              className="rounded-md border px-3 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
-            >
-              Dziś
-            </button>
-            <button
-              type="button"
-              aria-label="Następny miesiąc"
-              onClick={() => setViewMonth((m) => addMonths(m, 1))}
-              className="rounded-md border px-2 py-1 text-sm transition-colors hover:border-secondary-foreground hover:text-secondary-foreground"
-            >
-              ›
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-7 border-b border-border text-center text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-          {WEEKDAY_LABELS.map((w) => (
-            <div key={w} className="py-2.5">
-              {w}
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-7 divide-x divide-y divide-border">
-          {monthGrid.map((d) => {
-            const key = dayKey(d);
-            const inMonth = d.getMonth() === viewMonth.getMonth();
-            const isToday = key === dayKey(new Date());
-            const isSelected = !!selectedDay && key === dateKey(selectedDay);
-            const daySlots = slotsByDay.get(key) ?? [];
-            const hasSlots = daySlots.length > 0;
-
-            return (
-              <button
-                key={key}
-                type="button"
-                disabled={!hasSlots}
-                onClick={() => {
-                  setSelectedDay(daySlots[0].startsAt);
-                  onDayChange?.();
-                }}
-                className={`flex min-h-[112px] flex-col items-start gap-1 p-2.5 text-left transition-colors ${
-                  hasSlots ? "cursor-pointer hover:bg-secondary" : "cursor-default"
-                } ${isSelected ? "bg-primary/10" : ""}`}
-              >
-                <span
-                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[15px] ${
-                    isToday
-                      ? "bg-primary font-semibold text-primary-foreground"
-                      : inMonth
-                        ? "text-foreground"
-                        : "text-muted-foreground/40"
-                  }`}
-                >
-                  {d.getDate()}
-                </span>
-                {hasSlots && (
-                  <span
-                    className={`flex flex-col gap-0.5 text-[11px] ${isSelected ? "text-accent-foreground" : "text-muted-foreground"}`}
-                  >
-                    {daySlots.slice(0, 3).map((s) => (
-                      <span key={`${s.practitionerId}|${s.startsAt}`} className="flex items-center gap-1">
-                        <span className={`size-1.5 shrink-0 rounded-full ${SERVICE_TYPE_STYLES[s.serviceId].dot}`} />
-                        {formatTime(s.startsAt)}
-                      </span>
-                    ))}
-                    {daySlots.length > 3 && <span>+{daySlots.length - 3} więcej</span>}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {serviceTypesPresent.length > 1 && (
         <div className="flex flex-wrap gap-2">
           <button
@@ -287,38 +236,160 @@ export function SlotPicker({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-        {visibleSlots.length === 0 && (
-          <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
-            Brak wolnych terminów tego dnia.
-          </p>
-        )}
-        {visibleSlots.map((slot) => {
-          const isSelected = selectedSlot?.startsAt === slot.startsAt && selectedSlot?.practitionerId === slot.practitionerId;
-          return (
-            <button
-              type="button"
-              key={`${slot.practitionerId}|${slot.startsAt}`}
-              onClick={() => onSelect(slot)}
-              className={`flex flex-col rounded-lg border px-3 py-2.5 text-left text-[15px] font-medium transition-colors ${
-                isSelected
-                  ? "border-primary bg-accent text-accent-foreground"
-                  : "border-border bg-card text-secondary-foreground hover:border-secondary-foreground hover:bg-secondary"
-              }`}
-            >
-              <span className="flex items-center gap-1.5">
-                <span className={`size-1.5 rounded-full ${SERVICE_TYPE_STYLES[slot.serviceId].dot}`} />
-                {formatTime(slot.startsAt)}
-              </span>
-              {selectedServiceType === "all" && (
-                <span className="text-xs font-normal text-muted-foreground">{serviceTitleById.get(slot.serviceId)}</span>
-              )}
-              {selectedSpecialist === "all" && (
-                <span className="text-xs font-normal text-muted-foreground">{slot.practitionerName}</span>
-              )}
-            </button>
-          );
-        })}
+      <div className="overflow-hidden rounded-4xl border border-border bg-card p-6 md:p-8">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-[320px_150px_1fr]">
+          {/* calendar — availability only exists within the 7-day publish
+              horizon (listAvailableSlots), so most cells are simply unbookable */}
+          <div>
+            <div className="flex items-center justify-between pb-4">
+              <button
+                type="button"
+                aria-label="Poprzedni miesiąc"
+                onClick={() => setViewMonth((m) => addMonths(m, -1))}
+                className="rounded-md px-2 py-1 text-lg text-muted-foreground transition-colors hover:text-secondary-foreground"
+              >
+                ‹
+              </button>
+              <p className="text-lg font-bold capitalize text-secondary-foreground">
+                {viewMonth.toLocaleDateString("pl-PL", { month: "long", year: "numeric" })}
+              </p>
+              <button
+                type="button"
+                aria-label="Następny miesiąc"
+                onClick={() => setViewMonth((m) => addMonths(m, 1))}
+                className="rounded-md px-2 py-1 text-lg text-muted-foreground transition-colors hover:text-secondary-foreground"
+              >
+                ›
+              </button>
+            </div>
+
+            <div className="grid grid-cols-7 text-center text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              {WEEKDAY_LABELS.map((w) => (
+                <div key={w} className="py-1.5">
+                  {w}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7 gap-1">
+              {monthGrid.map((d) => {
+                const key = dayKey(d);
+                const inMonth = d.getMonth() === viewMonth.getMonth();
+                const isToday = key === dayKey(new Date());
+                const isSelected = !!selectedDay && key === dateKey(selectedDay);
+                const daySlotsForCell = slotsByDay.get(key) ?? [];
+                const hasSlots = daySlotsForCell.length > 0;
+                const types = [...new Set(daySlotsForCell.map((s) => s.serviceId))];
+
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={!hasSlots}
+                    onClick={() => pickDay(daySlotsForCell)}
+                    className={`flex aspect-square flex-col items-center justify-center gap-1 rounded-xl text-sm transition-colors ${
+                      isSelected
+                        ? "bg-primary font-semibold text-primary-foreground"
+                        : isToday
+                          ? "border border-primary text-primary"
+                          : hasSlots
+                            ? "cursor-pointer bg-primary/5 text-foreground hover:bg-primary/10"
+                            : `cursor-default ${inMonth ? "text-muted-foreground/40" : "text-muted-foreground/15"}`
+                    }`}
+                  >
+                    {d.getDate()}
+                    {hasSlots && (
+                      <span className="flex gap-0.5">
+                        {isSelected ? (
+                          <span className="size-1.5 rounded-full bg-primary-foreground/70" />
+                        ) : (
+                          types.slice(0, 3).map((id) => (
+                            <span key={id} className={`size-1.5 rounded-full ${SERVICE_TYPE_STYLES[id].dot}`} />
+                          ))
+                        )}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* times for the selected day */}
+          <div className="flex flex-col gap-3 border-t border-border pt-6 md:border-t-0 md:border-l md:pt-0 md:pl-6">
+            {selectedDay && (
+              <p className="text-sm font-semibold capitalize text-secondary-foreground">
+                {new Date(selectedDay).toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })}
+              </p>
+            )}
+            {timesForDay.length === 0 && <p className="text-sm text-muted-foreground">Brak wolnych godzin.</p>}
+            {timesForDay.map((time) => (
+              <button
+                type="button"
+                key={time}
+                onClick={() => pickTime(time)}
+                className={`w-full rounded-full border-2 px-4 py-2.5 text-center text-sm font-bold transition-colors ${
+                  time === selectedTime
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-primary text-primary hover:bg-primary/5"
+                }`}
+              >
+                {time}
+              </button>
+            ))}
+          </div>
+
+          {/* who's free at that day + time */}
+          <div className="flex flex-col gap-3 border-t border-border pt-6 md:border-t-0 md:border-l md:pt-0 md:pl-6">
+            {selectedDay && selectedTime && (
+              <p className="text-sm font-semibold capitalize text-secondary-foreground">
+                {new Date(selectedDay).toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })} · {selectedTime}
+              </p>
+            )}
+            {candidateSlots.length === 0 && (
+              <p className="text-sm text-muted-foreground">Wybierz dzień i godzinę, żeby zobaczyć dostępnych specjalistów.</p>
+            )}
+            {candidateSlots.map((slot) => {
+              const isSelected = selectedSlot?.startsAt === slot.startsAt && selectedSlot?.practitionerId === slot.practitionerId;
+              const service = serviceById.get(slot.serviceId);
+              const meeting = practitionerById.get(slot.practitionerId)?.meetingInfo ?? null;
+              const isOnline = meeting?.startsWith("http") ?? false;
+              return (
+                <button
+                  type="button"
+                  key={`${slot.practitionerId}|${slot.startsAt}`}
+                  onClick={() => onSelect(slot)}
+                  className={`flex items-center gap-4 rounded-2xl border p-4 text-left transition-colors ${
+                    isSelected
+                      ? "border-primary bg-accent text-accent-foreground"
+                      : "border-border bg-card hover:border-secondary-foreground hover:bg-secondary"
+                  }`}
+                >
+                  {/* ponytail: initials avatar — swap for practitioner.photoUrl once we have real photos */}
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {initials(slot.practitionerName)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-secondary-foreground">{slot.practitionerName}</p>
+                    {service && <p className="text-sm text-muted-foreground">{service.title}</p>}
+                    {meeting && (
+                      <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        {isOnline ? <Globe className="size-3.5" /> : <MapPin className="size-3.5" />}
+                        {isOnline ? "Online" : meeting}
+                      </p>
+                    )}
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="font-bold text-secondary-foreground">
+                      {slot.price > 0 ? `${slot.price} zł` : "Bezpłatnie"}
+                    </p>
+                    {service && <p className="text-xs text-muted-foreground">{service.durationMinutes} min</p>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

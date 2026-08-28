@@ -6,7 +6,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { formatDay, formatTime, SlotPicker } from "@/components/slot-picker";
 import { holdSlotAction, startPaymentAction } from "./actions";
-import type { Appointment, Service, ServiceType, Slot } from "@/lib/appointments";
+import type { Appointment, Practitioner, Service, ServiceType, Slot } from "@/lib/appointments";
 
 const ctaClassName = "font-bold tracking-wide uppercase";
 
@@ -28,10 +28,12 @@ type Phase = "browse" | "form" | "held" | "expired";
 export function BookingFlow({
   slots,
   services,
+  practitioners,
   initialServiceType,
 }: {
   slots: Slot[];
   services: Service[];
+  practitioners: Practitioner[];
   initialServiceType?: ServiceType;
 }) {
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
@@ -108,6 +110,7 @@ export function BookingFlow({
         onSelect={pickSlot}
         onDayChange={reset}
         services={services}
+        practitioners={practitioners}
         initialServiceType={initialServiceType}
       />
 

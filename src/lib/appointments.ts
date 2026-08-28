@@ -986,3 +986,165 @@ export async function replaceWeeklyAvailability(
   );
   if (insertError) throw insertError;
 }
+
+// --- Hour overrides (/panel/dostepnosc, step 2) ---------------------------
+// One calendar_exceptions row per toggled hour, exactly the shape
+// slotStartsForDay() above already consumes — so the booking side needs no
+// change at all. See docs/dostepnosc/02-poprawki-godzinowe.md.
+//
+// An override is recognised by being scoped to one service and spanning a
+// single whole hour. Leave/urlopy (step 3) are service-wide (service_id
+// null) and multi-hour, so the two never read each other's rows.
+
+// Local rather than imported from therapist-calendar.ts: that module already
+// imports from this one, and a value import would close the cycle.
+const WARSAW_TIME_ZONE = "Europe/Warsaw";
+
+export type StoredHourOverride = { date: string; hour: number; kind: "open" | "closed" };
+
+function addDaysUtc(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+export async function getHourOverrides(
+  practitionerId: string,
+  serviceId: ManagedAvailabilityService,
+  fromDate: string,
+  days = MAX_SLOT_DAYS_AHEAD
+): Promise<StoredHourOverride[]> {
+  const calendarId = await getCalendarId(practitionerId);
+  const { data, error } = await db()
+    .from("calendar_exceptions")
+    .select("date, kind, start_time, end_time")
+    .eq("calendar_id", calendarId)
+    .eq("service_id", serviceId)
+    .gte("date", fromDate)
+    .lte("date", addDaysUtc(fromDate, days - 1));
+  if (error) throw error;
+
+  return ((data ?? []) as { date: string; kind: string; start_time: string | null; end_time: string | null }[])
+    .filter((row) => row.start_time !== null && row.end_time !== null)
+    .map((row) => ({
+      date: row.date,
+      hour: Number(row.start_time!.slice(0, 2)),
+      kind: row.kind === "open" ? ("open" as const) : ("closed" as const),
+    }));
+}
+
+/**
+ * Booked visits in the grid window, reduced to whole hours. Read straight
+ * from appointments — a held-but-unpaid slot still blocks the hour, the same
+ * way it blocks a patient's booking.
+ */
+export type PanelVisit = {
+  id: string;
+  date: string; // Warsaw YYYY-MM-DD
+  startHour: number; // whole-hour grid row the block starts on
+  endHour: number; // exclusive — a 90-minute visit spans two rows
+  startLabel: string; // "14:00"
+  endLabel: string; // "15:30"
+  serviceId: ServiceType;
+  serviceTitle: string;
+  durationMinutes: number;
+  status: AppointmentStatus;
+  paymentStatus: Appointment["paymentStatus"];
+  price: number;
+  patient: { name: string; email: string; phone: string };
+};
+
+/**
+ * Booked visits inside the grid window, each already reduced to the whole
+ * hours it covers so the grid can render one merged block instead of N
+ * identical cells — a 90-minute ADHD diagnosis genuinely occupies two rows.
+ */
+export async function getBookedVisits(
+  practitionerId: string,
+  fromDate: string,
+  days = MAX_SLOT_DAYS_AHEAD,
+  now = new Date()
+): Promise<PanelVisit[]> {
+  const from = wallTimeToUtc(fromDate, "00:00", WARSAW_TIME_ZONE).getTime();
+  const to = wallTimeToUtc(addDaysUtc(fromDate, days), "00:00", WARSAW_TIME_ZONE).getTime();
+  const appointments = await getAppointmentsForPractitioner(practitionerId, now);
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return appointments
+    .filter((appointment) => {
+      const startsAt = new Date(appointment.startsAt).getTime();
+      return startsAt >= from && startsAt < to;
+    })
+    .map((appointment) => {
+      const startsAt = new Date(appointment.startsAt);
+      const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
+        timeZone: WARSAW_TIME_ZONE,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .format(startsAt)
+        .split(":")
+        .map(Number);
+      const startMinutes = hour * 60 + minute;
+      const endMinutes = startMinutes + appointment.service.durationMinutes;
+      return {
+        id: appointment.id,
+        date: ymdInTimeZone(startsAt, WARSAW_TIME_ZONE),
+        startHour: hour,
+        endHour: Math.ceil(endMinutes / 60),
+        startLabel: `${pad(hour)}:${pad(minute)}`,
+        endLabel: `${pad(Math.floor(endMinutes / 60) % 24)}:${pad(endMinutes % 60)}`,
+        serviceId: appointment.serviceId,
+        serviceTitle: appointment.service.title,
+        durationMinutes: appointment.service.durationMinutes,
+        status: appointment.status,
+        paymentStatus: appointment.paymentStatus,
+        price: appointment.price,
+        patient: appointment.patient,
+      };
+    });
+}
+
+/**
+ * Insert or delete the single exception row behind one grid cell. `clear`
+ * deletes it so the hour falls back to whatever the weekly rhythm says,
+ * which is why the delete is keyed on the slot rather than on a row id the
+ * browser would otherwise have to carry.
+ */
+export async function toggleHourOverride(input: {
+  practitionerId: string;
+  serviceId: ManagedAvailabilityService;
+  date: string;
+  hour: number;
+  intent: "open" | "closed" | "clear";
+}): Promise<void> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Niepoprawna data.");
+  if (!Number.isInteger(input.hour) || input.hour < 0 || input.hour > 23) {
+    throw new Error("Niepoprawna godzina.");
+  }
+  const calendarId = await getCalendarId(input.practitionerId);
+  const startTime = `${String(input.hour).padStart(2, "0")}:00`;
+
+  const { error: deleteError } = await db()
+    .from("calendar_exceptions")
+    .delete()
+    .eq("calendar_id", calendarId)
+    .eq("service_id", input.serviceId)
+    .eq("date", input.date)
+    .eq("start_time", startTime);
+  if (deleteError) throw deleteError;
+
+  if (input.intent === "clear") return;
+
+  const { error } = await db().from("calendar_exceptions").insert({
+    calendar_id: calendarId,
+    service_id: input.serviceId,
+    date: input.date,
+    kind: input.intent,
+    start_time: startTime,
+    end_time: `${String(input.hour + 1).padStart(2, "0")}:00`,
+  });
+  if (error) throw error;
+}

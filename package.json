@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "seed:doctors": "dotenv -e .env.local -- tsx scripts/seed-doctors.ts",
-    "seed:appointments": "dotenv -e .env.local -- tsx scripts/seed-appointments.ts"
+    "seed:appointments": "dotenv -e .env.local -- tsx scripts/seed-appointments.ts",
+    "seed:panel-week": "dotenv -e .env -- tsx scripts/seed-panel-week.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
