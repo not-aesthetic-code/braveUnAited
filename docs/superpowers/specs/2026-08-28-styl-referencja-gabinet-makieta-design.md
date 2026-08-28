@@ -24,7 +24,10 @@ zmiany, mimo że leży w tym samym folderze `docs/`.
 
 Fakty z referencji:
 
-- Font: **Roboto** (wagi 400/500/700/900), body 16px, line-height 1.6.
+- Font: **Roboto** (wagi 400/500/600/700/900), body 16px, line-height 1.6.
+  Waga 600 dopisana po code review — kod używa `font-semibold`, a Google
+  faktycznie serwuje realną wagę 600 dla tej rodziny (nie tylko
+  400/500/700/900 jak pierwotnie założono).
 - Kolor główny (CTA/primary): zielony `#01be4a`.
 - Kolor drugorzędny / mocny tekst: indygo `#1500bb`.
 - Tło strony ciepłe off-white `#f9f8f6`, karty białe `#ffffff`, tekst
@@ -50,7 +53,7 @@ nowej palety** (zielony/indygo) zamiast zostawiać domyślną szarość shadcn.
 | card / popover | `#ffffff` | `#1f2123` |
 | card-foreground / popover-foreground | `#323232` | `#ededed` |
 | primary | `#01be4a` | `#01be4a` |
-| primary-foreground | `#ffffff` | `#ffffff` |
+| primary-foreground | `#0d1f14`¹ | `#0d1f14`¹ |
 | secondary | `#f0f3ff` | `#23263a` |
 | secondary-foreground | `#1500bb` | `#b9c2ff` |
 | muted | `#f5f5f5` | `#232323` |
@@ -61,6 +64,13 @@ nowej palety** (zielony/indygo) zamiast zostawiać domyślną szarość shadcn.
 | border / input | `#eaeaea` | `oklch(1 0 0 / 10%)` |
 | ring | `#01be4a` | `#01be4a` |
 | radius (bazowy) | `0.75rem` (12px) | tak samo |
+
+¹ Odchylenie od referencji (świadome, po code review): referencja używa
+`#ffffff` jako `--primary-foreground` na tle `#01be4a`, co daje kontrast
+2.48:1 — poniżej WCAG AA (4.5:1 dla tekstu). Zamiast zmieniać kolor tła
+(utrata zgodności z referencją), zmieniono tylko kolor tekstu na
+`#0d1f14` (kontrast 6.92:1). Tło przycisków primary pozostaje identyczne
+jak w referencji.
 
 Poza zakresem tej zmiany (istniejące tokeny shadcn, aplikacja ich nie
 używa — zostają wartości domyślne z obecnego `globals.css`):
