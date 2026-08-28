@@ -18,7 +18,7 @@ export default function Home() {
           </h1>
           <p className="text-muted-foreground">
             Znajdź wolny termin i zarezerwuj go od razu — bez zakładania konta,
-            bez telefonu, bez czekania na odpowiedź.
+            wystarczy numer telefonu.
           </p>
         </div>
 
