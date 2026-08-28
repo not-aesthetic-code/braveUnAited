@@ -435,7 +435,8 @@ export function SlotPicker({
               {candidateSlots.map((slot) => {
                 const isSelected =
                   selectedSlot?.startsAt === slot.startsAt &&
-                  selectedSlot?.practitionerId === slot.practitionerId;
+                  selectedSlot?.practitionerId === slot.practitionerId &&
+                  selectedSlot?.serviceId === slot.serviceId;
                 const service = serviceById.get(slot.serviceId);
                 const meeting =
                   practitionerById.get(slot.practitionerId)?.meetingInfo ??
