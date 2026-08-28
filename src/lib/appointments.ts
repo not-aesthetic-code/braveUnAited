@@ -39,6 +39,7 @@ export type Practitioner = {
   id: string;
   name: string;
   services: { serviceId: ServiceType; priceOverride: number | null }[];
+  meetingInfo: string | null; // video link or address, shown on confirmation
 };
 
 export type Appointment = {
@@ -366,17 +367,35 @@ export async function listServicesWithPricing(): Promise<{ service: Service; pri
 type PractitionerRow = {
   id: string;
   name: string;
+  meeting_info: string | null;
   practitioner_services: { service_id: ServiceType; price_override: number | null }[];
 };
 
-export async function getPractitioners(): Promise<Practitioner[]> {
-  const { data, error } = await db().from("practitioners").select("id, name, practitioner_services(service_id, price_override)");
-  if (error) throw error;
-  return ((data ?? []) as PractitionerRow[]).map((r) => ({
+function fromPractitionerRow(r: PractitionerRow): Practitioner {
+  return {
     id: r.id,
     name: r.name,
+    meetingInfo: r.meeting_info,
     services: (r.practitioner_services ?? []).map((ps) => ({ serviceId: ps.service_id, priceOverride: ps.price_override })),
-  }));
+  };
+}
+
+export async function getPractitioners(): Promise<Practitioner[]> {
+  const { data, error } = await db()
+    .from("practitioners")
+    .select("id, name, meeting_info, practitioner_services(service_id, price_override)");
+  if (error) throw error;
+  return ((data ?? []) as PractitionerRow[]).map(fromPractitionerRow);
+}
+
+export async function getPractitioner(id: string): Promise<Practitioner | undefined> {
+  const { data, error } = await db()
+    .from("practitioners")
+    .select("id, name, meeting_info, practitioner_services(service_id, price_override)")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? fromPractitionerRow(data as PractitionerRow) : undefined;
 }
 
 function priceFor(serviceId: ServiceType, practitionerId: string, practitioners: Practitioner[], service: Service): number {
