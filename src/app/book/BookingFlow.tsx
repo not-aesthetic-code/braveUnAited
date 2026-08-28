@@ -6,7 +6,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { formatDay, formatTime, SlotPicker } from "@/components/slot-picker";
 import { holdSlotAction, startPaymentAction } from "./actions";
-import type { Appointment, ServiceType, Slot } from "@/lib/appointments";
+import type { Appointment, Practitioner, Service, ServiceType, Slot } from "@/lib/appointments";
 
 const ctaClassName = "font-bold tracking-wide uppercase";
 
@@ -25,7 +25,17 @@ function useCountdown(target: string | undefined) {
 
 type Phase = "browse" | "form" | "held" | "expired";
 
-export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType: ServiceType }) {
+export function BookingFlow({
+  slots,
+  services,
+  practitioners,
+  initialServiceType,
+}: {
+  slots: Slot[];
+  services: Service[];
+  practitioners: Practitioner[];
+  initialServiceType?: ServiceType;
+}) {
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [phase, setPhase] = useState<Phase>("browse");
   const [appt, setAppt] = useState<Appointment | null>(null);
@@ -53,7 +63,7 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
     startTransition(async () => {
       const result = await holdSlotAction({
         practitionerId: selectedSlot.practitionerId,
-        serviceType,
+        serviceType: selectedSlot.serviceId,
         startsAt: selectedSlot.startsAt,
         // ponytail: email left "" when not given — PatientContact stays a plain
         // required-string type instead of widening it for one optional field.
@@ -94,11 +104,22 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
 
   return (
     <div className="flex flex-col gap-6">
-      <SlotPicker slots={slots} selectedSlot={selectedSlot} onSelect={pickSlot} onDayChange={reset} />
+      <SlotPicker
+        slots={slots}
+        selectedSlot={selectedSlot}
+        onSelect={pickSlot}
+        onDayChange={reset}
+        services={services}
+        practitioners={practitioners}
+        initialServiceType={initialServiceType}
+      />
 
       {phase === "form" && selectedSlot && (
         <div className="rounded-4xl border border-border bg-card p-6">
-          <p className="font-semibold text-secondary-foreground">
+          <p className="text-xs font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+            {services.find((s) => s.id === selectedSlot.serviceId)?.title}
+          </p>
+          <p className="mt-1 font-semibold text-secondary-foreground">
             {selectedSlot.practitionerName} · {formatDay(selectedSlot.startsAt)}, {formatTime(selectedSlot.startsAt)}
           </p>
           <p className="text-sm text-muted-foreground">
@@ -156,7 +177,8 @@ export function BookingFlow({ slots, serviceType }: { slots: Slot[]; serviceType
 
       {phase === "held" && appt && selectedSlot && (
         <div className="rounded-4xl border border-border bg-card p-6">
-          <p className="font-semibold text-secondary-foreground">
+          <p className="text-xs font-semibold tracking-[0.08em] text-muted-foreground uppercase">{appt.service.title}</p>
+          <p className="mt-1 font-semibold text-secondary-foreground">
             {selectedSlot.practitionerName} · {formatDay(appt.startsAt)}, {formatTime(appt.startsAt)}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">
